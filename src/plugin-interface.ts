@@ -43,7 +43,7 @@ export function createPluginInterface(args: {
       await handler(input, output)
     },
 
-    "chat.headers": createChatHeadersHandler({ ctx }),
+    "chat.headers": createChatHeadersHandler({ ctx, pluginConfig }),
 
     "command.execute.before": createCommandExecuteBeforeHandler({
       hooks,

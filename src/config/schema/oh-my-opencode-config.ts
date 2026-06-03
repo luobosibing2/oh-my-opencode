@@ -17,6 +17,7 @@ import { I18nConfigSchema } from "./i18n"
 import { KeywordDetectorConfigSchema } from "./keyword-detector"
 import { NotificationConfigSchema } from "./notification"
 import { OpenClawConfigSchema } from "./openclaw"
+import { PlanOnlyModelRoutingConfigSchema } from "./plan-only-model-routing"
 import { ModelCapabilitiesConfigSchema } from "./model-capabilities"
 import { RalphLoopConfigSchema } from "./ralph-loop"
 import { RuntimeFallbackConfigSchema } from "./runtime-fallback"
@@ -77,6 +78,8 @@ export const OhMyOpenCodeConfigSchema = z.object({
   notification: NotificationConfigSchema.optional(),
   model_capabilities: ModelCapabilitiesConfigSchema.optional(),
   openclaw: OpenClawConfigSchema.optional(),
+  /** Plan-only model routing isolates Plan agent traffic through a dedicated gateway provider. */
+  plan_only_model_routing: PlanOnlyModelRoutingConfigSchema.optional(),
   /** Plugin i18n settings */
   i18n: I18nConfigSchema.optional(),
   team_mode: TeamModeConfigSchema.optional(),

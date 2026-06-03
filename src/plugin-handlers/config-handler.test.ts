@@ -231,6 +231,89 @@ describe("MCP env allowlist initialization", () => {
   })
 })
 
+describe("Plan-only provider registration", () => {
+  test("registers the Plan-only gateway provider with a fake API key only", async () => {
+    // given
+    const pluginConfig = createPluginConfig({
+      plan_only_model_routing: {
+        enabled: true,
+        provider_id: "plan-only",
+        model_id: "glm-5.1",
+        gateway_base_url: "https://www.micuapi.ai",
+        fake_api_key: "sk-omoc-plan-only-fake",
+        fallback_model: "micuapi/deepseek-v4-pro",
+      },
+    } as never)
+    const config: Record<string, unknown> = {
+      agent: {},
+    }
+    const handler = createConfigHandler({
+      ctx: { directory: "/tmp" },
+      pluginConfig,
+      modelCacheState: {
+        anthropicContext1MEnabled: false,
+        modelContextLimitsCache: new Map(),
+      },
+    })
+
+    // when
+    await handler(config)
+
+    // then
+    const providers = config.providers as Record<string, Record<string, unknown>>
+    const planProvider = providers["plan-only"]
+    expect(planProvider.endpoint).toEqual({
+      type: "aisdk",
+      package: "@ai-sdk/openai-compatible",
+      url: "https://www.micuapi.ai",
+    })
+    expect(planProvider.options).toEqual({
+      aisdk: {
+        provider: {
+          apiKey: "sk-omoc-plan-only-fake",
+        },
+      },
+    })
+    expect((planProvider.models as Record<string, unknown>)["glm-5.1"]).toBeDefined()
+
+    const legacyProviders = config.provider as Record<string, Record<string, unknown>>
+    expect(legacyProviders["plan-only"].npm).toBe("@ai-sdk/openai-compatible")
+    expect(JSON.stringify(config)).toContain("sk-omoc-plan-only-fake")
+    expect(JSON.stringify(config)).not.toContain("OMOC_PLAN_ONLY_REAL_API_KEY")
+  })
+
+  test("does not register Plan-only provider when routing is disabled", async () => {
+    // given
+    const pluginConfig = createPluginConfig({
+      plan_only_model_routing: {
+        enabled: false,
+        gateway_base_url: "https://www.micuapi.ai",
+        fake_api_key: "sk-omoc-plan-only-fake",
+      },
+    } as never)
+    const config: Record<string, unknown> = {
+      providers: {},
+      provider: {},
+      agent: {},
+    }
+    const handler = createConfigHandler({
+      ctx: { directory: "/tmp" },
+      pluginConfig,
+      modelCacheState: {
+        anthropicContext1MEnabled: false,
+        modelContextLimitsCache: new Map(),
+      },
+    })
+
+    // when
+    await handler(config)
+
+    // then
+    expect((config.providers as Record<string, unknown>)["plan-only"]).toBeUndefined()
+    expect((config.provider as Record<string, unknown>)["plan-only"]).toBeUndefined()
+  })
+})
+
 describe("runtime security skill source registration", () => {
   test("adds the runtime skill source URL to the live OpenCode config", async () => {
     // given

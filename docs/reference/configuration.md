@@ -29,6 +29,7 @@ Complete reference for Oh My OpenCode plugin configuration. During the rename tr
   - [MCPs](#mcps)
   - [LSP](#lsp)
 - [Advanced](#advanced)
+  - [Plan-only Model Routing](#plan-only-model-routing)
   - [Runtime Fallback](#runtime-fallback)
   - [Model Capabilities](#model-capabilities)
   - [Hashline Edit](#hashline-edit)
@@ -648,6 +649,34 @@ To disable the LSP MCP entirely:
 ---
 
 ## Advanced
+
+### Plan-only Model Routing
+
+`plan_only_model_routing` forces Plan requests through a dedicated provider/model while keeping ordinary agents on the user's normal model. The OpenCode-visible provider uses a fake API key; a separate gateway is responsible for swapping the real key only when the plugin adds the Plan route header.
+
+```jsonc
+{
+  "plan_only_model_routing": {
+    "enabled": true,
+    "provider_id": "plan-only",
+    "model_id": "glm-5.1",
+    "gateway_base_url": "https://www.micuapi.ai",
+    "fake_api_key": "sk-omoc-plan-only-fake",
+    "fallback_model": "micuapi/deepseek-v4-pro"
+  }
+}
+```
+
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `enabled` | `false` | Enable Plan-only model routing |
+| `provider_id` | `plan-only` | OpenCode provider ID injected by the plugin |
+| `model_id` | `glm-5.1` | Model ID used for Plan requests |
+| `gateway_base_url` | `https://www.micuapi.ai` | OpenAI-compatible gateway base URL |
+| `fake_api_key` | `sk-omoc-plan-only-fake` | API key stored in OpenCode config; never use a real secret here |
+| `fallback_model` | `micuapi/deepseek-v4-pro` | Normal model restored when a non-Plan agent tries to use the Plan-only model |
+
+Full design and verification notes: [Plan-only Model Routing Isolation](./plan-only-model-routing.md).
 
 ### Runtime Fallback
 

@@ -34,6 +34,7 @@ import { isAmbiguousPostDispatchPromptFailure } from "../shared/prompt-failure-c
 import { shouldRetryError } from "../shared/model-error-classifier";
 import { buildFallbackChainFromModels } from "../shared/fallback-chain-from-models";
 import { extractRetryAttempt, normalizeRetryStatusMessage } from "../shared/retry-status-utils";
+import { isPlanOnlyModelForConfig } from "../shared/plan-only-model-routing";
 import { clearSessionModel, getSessionModel, setSessionModel } from "../shared/session-model-state";
 import { clearSessionPromptParams } from "../shared/session-prompt-params-state";
 import { deleteSessionTools } from "../shared/session-tools-store";
@@ -788,9 +789,14 @@ export function createEventHandler(args: {
         }
         const providerID = info?.providerID as string | undefined;
         const modelID = info?.modelID as string | undefined;
-        if (providerID && modelID && !isCompactionMessage) {
-          lastKnownModelBySession.set(sessionID, { providerID, modelID });
-          setSessionModel(sessionID, { providerID, modelID });
+        const messageModel = providerID && modelID ? { providerID, modelID } : undefined;
+        if (
+          messageModel &&
+          !isCompactionMessage &&
+          !isPlanOnlyModelForConfig(pluginConfig, messageModel)
+        ) {
+          lastKnownModelBySession.set(sessionID, messageModel);
+          setSessionModel(sessionID, messageModel);
         }
         userAbortInterruptedRecoveryGuard.clear(sessionID);
       }

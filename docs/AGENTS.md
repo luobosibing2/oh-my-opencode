@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 
-19 Markdown files across 6 subdirectories + 2 root files. Categorized by audience: user-facing guides + reference, internal design docs (superpowers/), troubleshooting, legal. The web site at [packages/web/](file:///Users/yeongyu/local-workspaces/omo/packages/web/) consumes some of these (via `web-deploy.yml` triggers).
+20 Markdown files across 6 subdirectories + 2 root files. Categorized by audience: user-facing guides + reference, internal design docs (superpowers/), troubleshooting, legal. The web site at [packages/web/](file:///Users/yeongyu/local-workspaces/omo/packages/web/) consumes some of these (via `web-deploy.yml` triggers).
 
 ## WHERE TO LOOK
 
@@ -23,6 +23,7 @@
 | Release process | [docs/reference/release-process.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/release-process.md) |
 | Claiming the lazycodex npm name | [docs/reference/lazycodex-npm-reservation.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/lazycodex-npm-reservation.md) |
 | Rules-injector cross-module comparison | [docs/reference/rules-injection-cross-module-comparison.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/rules-injection-cross-module-comparison.md) |
+| Plan-only model routing isolation | [docs/reference/plan-only-model-routing.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/plan-only-model-routing.md) |
 | Sample configs | [docs/examples/](file:///Users/yeongyu/local-workspaces/omo/docs/examples/) (default, coding-focused, planning-focused) |
 | Privacy & ToS | [docs/legal/](file:///Users/yeongyu/local-workspaces/omo/docs/legal/) |
 | Manifesto | [docs/manifesto.md](file:///Users/yeongyu/local-workspaces/omo/docs/manifesto.md) |
@@ -36,7 +37,7 @@ docs/
 ├── manifesto.md                              # The "why" — referenced from README
 ├── model-capabilities-maintenance.md         # How model-capabilities cache is refreshed
 ├── guide/                                    # User-facing tutorial-style guides (5 files)
-├── reference/                                # API / config / CLI reference (7 files)
+├── reference/                                # API / config / CLI reference (8 files)
 ├── examples/                                 # Sample JSONC configs (3 files)
 ├── legal/                                    # privacy-policy.md + terms-of-service.md
 ├── superpowers/
