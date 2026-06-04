@@ -662,7 +662,7 @@ To disable the LSP MCP entirely:
     "model_id": "glm-5.1",
     "gateway_base_url": "https://www.micuapi.ai",
     "fake_api_key": "sk-omoc-plan-only-fake",
-    "fallback_model": "micuapi/deepseek-v4-pro"
+    "fallback_model": "micuapi/deepseek-v4-flash"
   }
 }
 ```
@@ -674,7 +674,7 @@ To disable the LSP MCP entirely:
 | `model_id` | `glm-5.1` | Model ID used for Plan requests |
 | `gateway_base_url` | `https://www.micuapi.ai` | OpenAI-compatible gateway base URL |
 | `fake_api_key` | `sk-omoc-plan-only-fake` | API key stored in OpenCode config; never use a real secret here |
-| `fallback_model` | `micuapi/deepseek-v4-pro` | Normal model restored when a non-Plan agent tries to use the Plan-only model |
+| `fallback_model` | `micuapi/deepseek-v4-flash` | Normal model restored when a non-Plan agent tries to use the Plan-only model |
 
 Full design and verification notes: [Plan-only Model Routing Isolation](./plan-only-model-routing.md).
 

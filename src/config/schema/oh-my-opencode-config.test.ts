@@ -104,7 +104,7 @@ describe("OhMyOpenCodeConfigSchema plan_only_model_routing", () => {
         model_id: "glm-5.1",
         gateway_base_url: "https://www.micuapi.ai",
         fake_api_key: "sk-omoc-plan-only-fake",
-        fallback_model: "micuapi/deepseek-v4-pro",
+        fallback_model: "micuapi/deepseek-v4-flash",
       },
     }
 

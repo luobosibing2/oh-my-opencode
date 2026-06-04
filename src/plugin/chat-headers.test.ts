@@ -11,7 +11,7 @@ function createPlanOnlyRoutingConfig(): Record<string, unknown> {
       model_id: "glm-5.1",
       gateway_base_url: "https://www.micuapi.ai",
       fake_api_key: "sk-omoc-plan-only-fake",
-      fallback_model: "micuapi/deepseek-v4-pro",
+      fallback_model: "micuapi/deepseek-v4-flash",
     },
   }
 }
@@ -251,7 +251,7 @@ describe("createChatHeadersHandler", () => {
         sessionID: "ses_normal",
         agent: "build",
         provider: { id: "micuapi" },
-        model: { providerID: "micuapi", id: "deepseek-v4-pro" },
+        model: { providerID: "micuapi", id: "deepseek-v4-flash" },
         message: {
           id: "msg_normal",
           role: "user",

@@ -24,7 +24,7 @@ config hook registers fake provider
 
 ### Configuration Schema
 
-新增配置键 `plan_only_model_routing`，字段定义在 [`plan-only-model-routing.ts`](../../src/config/schema/plan-only-model-routing.ts#L3)。默认目标是 `plan-only/glm-5.1`，默认 gateway 是 `https://www.micuapi.ai`，默认 fake key 是 `sk-omoc-plan-only-fake`，默认 fallback 是 `micuapi/deepseek-v4-pro`；这些默认值集中在 [`plan-only-model-routing.ts`](../../src/shared/plan-only-model-routing.ts#L19)。
+新增配置键 `plan_only_model_routing`，字段定义在 [`plan-only-model-routing.ts`](../../src/config/schema/plan-only-model-routing.ts#L3)。默认目标是 `plan-only/glm-5.1`，默认 gateway 是 `https://www.micuapi.ai`，默认 fake key 是 `sk-omoc-plan-only-fake`，默认 fallback 是 `micuapi/deepseek-v4-flash`；这些默认值集中在 [`plan-only-model-routing.ts`](../../src/shared/plan-only-model-routing.ts#L19)。
 
 示例：
 
@@ -36,7 +36,7 @@ config hook registers fake provider
     "model_id": "glm-5.1",
     "gateway_base_url": "http://127.0.0.1:8787/v1",
     "fake_api_key": "sk-omoc-plan-only-fake",
-    "fallback_model": "micuapi/deepseek-v4-pro"
+    "fallback_model": "micuapi/deepseek-v4-flash"
   }
 }
 ```
@@ -74,7 +74,7 @@ config hook registers fake provider
 | Plan 下手动选择普通模型 | 最终 model 是 `plan-only/glm-5.1` | [`chat-message.test.ts`](../../src/plugin/chat-message.test.ts#L620) |
 | Web UI `Prometheus - Plan Builder` | 被视为 Plan-only | [`chat-message.test.ts`](../../src/plugin/chat-message.test.ts#L638) |
 | 非 Plan 手动选择 Plan-only | 恢复最近正常模型 | [`chat-message.test.ts`](../../src/plugin/chat-message.test.ts#L659) |
-| 非 Plan 没有正常模型历史 | 恢复 `micuapi/deepseek-v4-pro` | [`chat-message.test.ts`](../../src/plugin/chat-message.test.ts#L682) |
+| 非 Plan 没有正常模型历史 | 恢复 `micuapi/deepseek-v4-flash` | [`chat-message.test.ts`](../../src/plugin/chat-message.test.ts#L682) |
 | Plan + Plan-only | 添加 `x-omoc-plan-route: 1` | [`chat-headers.test.ts`](../../src/plugin/chat-headers.test.ts#L170) |
 | Web UI Plan alias + Plan-only | 添加 `x-omoc-plan-route: 1` | [`chat-headers.test.ts`](../../src/plugin/chat-headers.test.ts#L194) |
 | 非 Plan + Plan-only | 不添加 route header | [`chat-headers.test.ts`](../../src/plugin/chat-headers.test.ts#L218) |
@@ -82,13 +82,13 @@ config hook registers fake provider
 | `config` hook provider 注册 | `plan-only/glm-5.1` 可见且只含 fake SK | [`config-handler.test.ts`](../../src/plugin-handlers/config-handler.test.ts#L240) |
 | 配置 schema | `plan_only_model_routing` 可解析 | [`oh-my-opencode-config.test.ts`](../../src/config/schema/oh-my-opencode-config.test.ts#L103) |
 
-端到端验收使用 `deepseek-v4-pro` 作为普通模型对照，`glm-5.1` 作为 Plan-only 目标：
+端到端验收使用 `deepseek-v4-flash` 作为普通模型对照，`glm-5.1` 作为 Plan-only 目标：
 
-1. Build 普通请求走 `micuapi/deepseek-v4-pro`。
-2. 切到 Plan alias 后，即使 UI 当前模型仍显示 `deepseek-v4-pro`，实际请求走 `plan-only/glm-5.1`。
-3. 切回 Build 后下一条请求恢复 `micuapi/deepseek-v4-pro`。
+1. Build 普通请求走 `micuapi/deepseek-v4-flash`。
+2. 切到 Plan alias 后，即使 UI 当前模型仍显示 `deepseek-v4-flash`，实际请求走 `plan-only/glm-5.1`。
+3. 切回 Build 后下一条请求恢复 `micuapi/deepseek-v4-flash`。
 4. Build 手动切到 `plan-only/glm-5.1` 时不会获得 real SK。
-5. gateway 探针验证：普通 `deepseek-v4-pro` 返回 200，带 Plan route header 的 `glm-5.1` 返回 200，不带 header 的 `glm-5.1` 返回 403。
+5. gateway 探针验证：普通 `deepseek-v4-flash` 返回 200，带 Plan route header 的 `glm-5.1` 返回 200，不带 header 的 `glm-5.1` 返回 403。
 
 ## Demo Runtime
 
@@ -100,4 +100,4 @@ config hook registers fake provider
 | OpenCode backend | `http://127.0.0.1:4096` |
 | OpenCode Web UI | `http://127.0.0.1:4444` |
 
-演示时在图形化界面选择 `Prometheus - Plan Builder` agent，即可触发 Plan-only 路由。gateway 日志中成功路由会显示 `route=plan model=glm-5.1`；普通请求会显示 `route=normal model=deepseek-v4-pro`。
+演示时在图形化界面选择 `Prometheus - Plan Builder` agent，即可触发 Plan-only 路由。gateway 日志中成功路由会显示 `route=plan model=glm-5.1`；普通请求会显示 `route=normal model=deepseek-v4-flash`。

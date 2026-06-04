@@ -21,7 +21,7 @@ const DEFAULT_MODEL_ID = "glm-5.1"
 const DEFAULT_GATEWAY_BASE_URL = "https://www.micuapi.ai"
 const DEFAULT_FAKE_API_KEY = "sk-omoc-plan-only-fake"
 const DEFAULT_FALLBACK_PROVIDER_ID = "micuapi"
-const DEFAULT_FALLBACK_MODEL = "micuapi/deepseek-v4-pro"
+const DEFAULT_FALLBACK_MODEL = "micuapi/deepseek-v4-flash"
 const PLAN_AGENT_ALIASES = new Set(["plan", "prometheus - plan builder"])
 
 function nonEmptyString(value: unknown): string | undefined {

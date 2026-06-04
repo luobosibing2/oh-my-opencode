@@ -609,7 +609,7 @@ function createPlanOnlyRoutingConfig(): Record<string, unknown> {
       model_id: "glm-5.1",
       gateway_base_url: "https://www.micuapi.ai",
       fake_api_key: "sk-omoc-plan-only-fake",
-      fallback_model: "micuapi/deepseek-v4-pro",
+      fallback_model: "micuapi/deepseek-v4-flash",
     },
   }
 }
@@ -617,7 +617,7 @@ function createPlanOnlyRoutingConfig(): Record<string, unknown> {
 describe("createChatMessageHandler - Plan-only model routing", () => {
   test("forces Plan agent messages to the Plan-only model regardless of selected model", async () => {
     //#given
-    const priorNormalModel = { providerID: "micuapi", modelID: "deepseek-v4-pro" }
+    const priorNormalModel = { providerID: "micuapi", modelID: "deepseek-v4-flash" }
     setSessionModel("test-session", priorNormalModel)
     const args = createMockHandlerArgs({
       pluginConfig: createPlanOnlyRoutingConfig(),
@@ -637,13 +637,13 @@ describe("createChatMessageHandler - Plan-only model routing", () => {
 
   test("treats the Web UI Prometheus Plan Builder agent as Plan-only", async () => {
     //#given
-    const priorNormalModel = { providerID: "micuapi", modelID: "deepseek-v4-pro" }
+    const priorNormalModel = { providerID: "micuapi", modelID: "deepseek-v4-flash" }
     setSessionModel("test-session", priorNormalModel)
     const args = createMockHandlerArgs({
       pluginConfig: createPlanOnlyRoutingConfig(),
     })
     const handler = createChatMessageHandler(args)
-    const input = createMockInput("Prometheus - Plan Builder", { providerID: "micuapi", modelID: "deepseek-v4-pro" })
+    const input = createMockInput("Prometheus - Plan Builder", { providerID: "micuapi", modelID: "deepseek-v4-flash" })
     const output = createMockOutput()
 
     //#when
@@ -656,7 +656,7 @@ describe("createChatMessageHandler - Plan-only model routing", () => {
 
   test("restores the recent normal model when a non-Plan agent tries to use the Plan-only model", async () => {
     //#given
-    const recentNormalModel = { providerID: "micuapi", modelID: "deepseek-v4-pro" }
+    const recentNormalModel = { providerID: "micuapi", modelID: "deepseek-v4-flash" }
     setSessionModel("test-session", recentNormalModel)
     const args = createMockHandlerArgs({
       pluginConfig: createPlanOnlyRoutingConfig(),
@@ -686,8 +686,8 @@ describe("createChatMessageHandler - Plan-only model routing", () => {
     await handler(input, output)
 
     //#then
-    expect(output.message["model"]).toEqual({ providerID: "micuapi", modelID: "deepseek-v4-pro" })
-    expect(getSessionModel("test-session")).toEqual({ providerID: "micuapi", modelID: "deepseek-v4-pro" })
+    expect(output.message["model"]).toEqual({ providerID: "micuapi", modelID: "deepseek-v4-flash" })
+    expect(getSessionModel("test-session")).toEqual({ providerID: "micuapi", modelID: "deepseek-v4-flash" })
   })
 })
 
