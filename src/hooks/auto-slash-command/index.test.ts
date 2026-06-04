@@ -1,4 +1,11 @@
-import { describe, expect, it, beforeEach, mock, spyOn } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { clearCommandLoaderCache } from "../../features/claude-code-command-loader"
+import type { LoadedSkill } from "../../features/opencode-skill-loader/types"
+// Import real shared module to avoid mock leaking to other test files
+import * as shared from "../../shared"
 import type {
   AutoSlashCommandHookInput,
   AutoSlashCommandHookOutput,
@@ -6,15 +13,7 @@ import type {
   CommandExecuteBeforeOutput,
 } from "./types"
 
-// Import real shared module to avoid mock leaking to other test files
-import * as shared from "../../shared"
-
-// Spy on log instead of mocking the entire module
-const logMock = spyOn(shared, "log").mockImplementation(() => {})
-
-
-
-const { createAutoSlashCommandHook } = await import("./index")
+type AutoSlashCommandModule = typeof import("./hook")
 
 function createMockInput(sessionID: string, messageID?: string): AutoSlashCommandHookInput {
   return {
@@ -38,11 +37,57 @@ function createMockOutput(text: string): AutoSlashCommandHookOutput {
 }
 
 describe("createAutoSlashCommandHook", () => {
-  beforeEach(() => {
-    logMock.mockClear()
+  let tempDir = ""
+  let originalWorkingDirectory = ""
+  let logCalls: Array<[string, unknown?]>
+  let createAutoSlashCommandHook: AutoSlashCommandModule["createAutoSlashCommandHook"]
+
+  beforeEach(async () => {
+    clearCommandLoaderCache()
+    mock.restore()
+    logCalls = []
+    spyOn(shared, "log").mockImplementation((message: string, data?: unknown) => {
+      logCalls.push([message, data])
+    })
+    tempDir = mkdtempSync(join(tmpdir(), "omo-auto-slash-hook-test-"))
+    originalWorkingDirectory = process.cwd()
+
+    const autoSlashCommandModule = await import(`./hook?test=${Date.now()}-${Math.random()}`)
+    createAutoSlashCommandHook = autoSlashCommandModule.createAutoSlashCommandHook
+  })
+
+  afterEach(() => {
+    clearCommandLoaderCache()
+    process.chdir(originalWorkingDirectory)
+    rmSync(tempDir, { recursive: true, force: true })
+    mock.restore()
   })
 
   describe("slash command replacement", () => {
+    it("should resolve project commands from provided directory even when cwd differs", async () => {
+      // given
+      const projectDir = join(tempDir, "project")
+      const commandDir = join(projectDir, ".claude", "commands")
+      mkdirSync(commandDir, { recursive: true })
+      writeFileSync(
+        join(commandDir, "project-only-command.md"),
+        `---\ndescription: Project command\n---\nExecute from project directory.\n`,
+      )
+      process.chdir("/tmp")
+
+      const hook = createAutoSlashCommandHook({ directory: projectDir })
+      const input = createMockInput(`test-session-project-${Date.now()}`)
+      const output = createMockOutput("/project-only-command")
+
+      // when
+      await hook["chat.message"](input, output)
+
+      // then
+      expect(output.parts[0].text).toContain("<auto-slash-command>")
+      expect(output.parts[0].text).toContain("Execute from project directory.")
+      expect(output.parts[0].text).toContain("**Scope**: project")
+    })
+
     it("should not modify message when command not found", async () => {
       // given a slash command that doesn't exist
       const hook = createAutoSlashCommandHook()
@@ -199,7 +244,7 @@ describe("createAutoSlashCommandHook", () => {
 
       // when hook is called
       // then should not throw
-      await expect(hook["chat.message"](input, output)).resolves.toBeUndefined()
+      await hook["chat.message"](input, output)
     })
 
     it("should handle just slash", async () => {
@@ -310,6 +355,38 @@ describe("createAutoSlashCommandHook", () => {
       expect(output.parts[0].text).toContain("/ralph-loop Command")
     })
 
+    it("should not duplicate injection when command output is already tagged", async () => {
+      //#given
+      const hook = createAutoSlashCommandHook()
+      const input = createCommandInput("ralph-loop")
+      const taggedContent = "<auto-slash-command>\n/ralph-loop Command\n</auto-slash-command>"
+      const output = createCommandOutput(taggedContent)
+
+      //#when
+      await hook["command.execute.before"](input, output)
+
+      //#then
+      expect(output.parts).toHaveLength(1)
+      expect(output.parts[0]?.text).toBe(taggedContent)
+      expect(output.parts[0]?.text?.split("<auto-slash-command>").length).toBe(2)
+    })
+
+    it("should inject template for known builtin commands like ulw-loop", async () => {
+      //#given
+      const hook = createAutoSlashCommandHook()
+      const input = createCommandInput("ulw-loop", '"Ship feature" --strategy=continue')
+      const output = createCommandOutput("original")
+
+      //#when
+      await hook["command.execute.before"](input, output)
+
+      //#then
+      expect(output.parts[0].text).toContain("<auto-slash-command>")
+      expect(output.parts[0].text).toContain("/ulw-loop Command")
+      expect(output.parts[0].text).toContain("<user-task>")
+      expect(output.parts[0].text).toContain('"Ship feature" --strategy=continue')
+    })
+
     it("should pass command arguments correctly", async () => {
       //#given
       const hook = createAutoSlashCommandHook()
@@ -320,13 +397,135 @@ describe("createAutoSlashCommandHook", () => {
       await hook["command.execute.before"](input, output)
 
       //#then
-      expect(logMock).toHaveBeenCalledWith(
+      expect(logCalls).toContainEqual([
         "[auto-slash-command] command.execute.before received",
         expect.objectContaining({
           command: "some-command",
           arguments: "arg1 arg2 arg3",
-        })
-      )
+        }),
+      ])
+    })
+
+    it("should not duplicate injection when parts already contain auto-slash-command tags (#3724)", async () => {
+      //#given - parts already have tags (as if chat.message hook already ran)
+      const hook = createAutoSlashCommandHook()
+      const input = createCommandInput("ralph-loop")
+      const alreadyTagged = "<auto-slash-command>\n/ralph-loop Command\n## Command Instructions\ntemplate content\n</auto-slash-command>"
+      const output: CommandExecuteBeforeOutput = {
+        parts: [{ type: "text", text: alreadyTagged }],
+      }
+
+      //#when
+      await hook["command.execute.before"](input, output)
+
+      //#then - parts unchanged, no second injection
+      expect(output.parts).toHaveLength(1)
+      expect(output.parts[0].text).toBe(alreadyTagged)
+      const tagCount = (output.parts[0].text?.split("<auto-slash-command>").length ?? 1) - 1
+      expect(tagCount).toBe(1)
+    })
+
+  })
+  describe("skills as slash commands", () => {
+    function createTestSkill(name: string, template: string): LoadedSkill {
+      return {
+        name,
+        path: `/test/skills/${name}/SKILL.md`,
+        definition: {
+          name,
+          description: `Test skill: ${name}`,
+          template,
+        },
+        scope: "user",
+      }
+    }
+
+    it("should replace message with skill template when skill is used as slash command via chat.message", async () => {
+      // given a hook with a skill
+      const skill = createTestSkill("my-test-skill", "This is the skill template content")
+      const hook = createAutoSlashCommandHook({ skills: [skill] })
+      const sessionID = `test-session-skill-chat-${Date.now()}`
+      const input = createMockInput(sessionID)
+      const output = createMockOutput("/my-test-skill some arguments")
+
+      // when hook processes the message
+      await hook["chat.message"](input, output)
+
+      // then should replace message with skill template
+      expect(output.parts[0].text).toContain("<auto-slash-command>")
+      expect(output.parts[0].text).toContain("/my-test-skill Command")
+      expect(output.parts[0].text).toContain("This is the skill template content")
+    })
+
+    it("does not replace synthetic slash text with a skill template", async () => {
+      // given
+      const skill = createTestSkill("my-test-skill", "This is the skill template content")
+      const hook = createAutoSlashCommandHook({ skills: [skill] })
+      const sessionID = `test-session-skill-synthetic-${Date.now()}`
+      const input = createMockInput(sessionID)
+      const output: AutoSlashCommandHookOutput = {
+        message: {},
+        parts: [{ type: "text", text: "/my-test-skill some arguments", synthetic: true }],
+      }
+      const originalText = output.parts[0].text
+
+      // when
+      await hook["chat.message"](input, output)
+
+      // then
+      expect(output.parts[0].text).toBe(originalText)
+    })
+
+    it("should inject skill template via command.execute.before", async () => {
+      // given a hook with a skill
+      const skill = createTestSkill("my-test-skill", "Skill template for command execute")
+      const hook = createAutoSlashCommandHook({ skills: [skill] })
+      const input: CommandExecuteBeforeInput = {
+        command: "my-test-skill",
+        sessionID: `test-session-skill-cmd-${Date.now()}-${Math.random()}`,
+        arguments: "extra args",
+      }
+      const output: CommandExecuteBeforeOutput = {
+        parts: [{ type: "text", text: "original" }],
+      }
+
+      // when hook processes the command
+      await hook["command.execute.before"](input, output)
+
+      // then should inject skill template
+      expect(output.parts[0].text).toContain("<auto-slash-command>")
+      expect(output.parts[0].text).toContain("/my-test-skill Command")
+      expect(output.parts[0].text).toContain("Skill template for command execute")
+      expect(output.parts[0].text).toContain("extra args")
+    })
+
+    it("should handle skill with lazy content loader", async () => {
+      // given a skill with lazy content (no inline template)
+      const skill: LoadedSkill = {
+        name: "lazy-skill",
+        path: "/test/skills/lazy-skill/SKILL.md",
+        definition: {
+          name: "lazy-skill",
+          description: "A lazy-loaded skill",
+          template: "",
+        },
+        scope: "user",
+        lazyContent: {
+          loaded: false,
+          load: async () => "Lazy loaded skill content here",
+        },
+      }
+      const hook = createAutoSlashCommandHook({ skills: [skill] })
+      const sessionID = `test-session-lazy-skill-${Date.now()}`
+      const input = createMockInput(sessionID)
+      const output = createMockOutput("/lazy-skill")
+
+      // when hook processes the message
+      await hook["chat.message"](input, output)
+
+      // then should replace message with lazily loaded content
+      expect(output.parts[0].text).toContain("<auto-slash-command>")
+      expect(output.parts[0].text).toContain("Lazy loaded skill content here")
     })
   })
 })

@@ -1,5 +1,6 @@
 export interface EventState {
   mainSessionIdle: boolean
+  mainSessionStarted: boolean
   mainSessionError: boolean
   lastError: string | null
   lastOutput: string
@@ -7,6 +8,8 @@ export interface EventState {
   currentTool: string | null
   /** Set to true when the main session has produced meaningful work (text, tool call, or tool result) */
   hasReceivedMeaningfulWork: boolean
+  /** Timestamp of the last received event (for watchdog detection) */
+  lastEventTimestamp: number
   /** Count of assistant messages for the main session */
   messageCount: number
   /** Current agent name from the latest assistant message */
@@ -15,7 +18,6 @@ export interface EventState {
   currentModel: string | null
   /** Current model variant from the latest assistant message */
   currentVariant: string | null
-  /** Current message role (user/assistant) — used to filter user messages from display */
   currentMessageRole: string | null
   /** Agent profile colors keyed by display name */
   agentColorsByName: Record<string, string>
@@ -37,7 +39,6 @@ export interface EventState {
   textAtLineStart: boolean
   /** Whether reasoning stream is currently at line start (for padding) */
   thinkingAtLineStart: boolean
-  /** Current assistant message ID — prevents counter resets on repeated message.updated for same message */
   currentMessageId: string | null
   /** Assistant message start timestamp by message ID */
   messageStartedAtById: Record<string, number>
@@ -48,12 +49,14 @@ export interface EventState {
 export function createEventState(): EventState {
   return {
     mainSessionIdle: false,
+    mainSessionStarted: false,
     mainSessionError: false,
     lastError: null,
     lastOutput: "",
     lastPartText: "",
     currentTool: null,
     hasReceivedMeaningfulWork: false,
+    lastEventTimestamp: Date.now(),
     messageCount: 0,
     currentAgent: null,
     currentModel: null,

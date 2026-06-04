@@ -2,11 +2,17 @@ export interface TrackedSession {
   sessionId: string
   paneId: string
   description: string
+  attachActivated: boolean
+  attachActivatedAt?: Date
   createdAt: Date
   lastSeenAt: Date
+  closePending: boolean
+  closeRetryCount: number
   // Stability detection fields (prevents premature closure)
   lastMessageCount?: number
   stableIdlePolls?: number
+  activityVersion?: number
+  observedIdleActivityVersion?: number
 }
 
 export const MIN_PANE_WIDTH = 52
@@ -25,6 +31,8 @@ export interface TmuxPaneInfo {
 export interface WindowState {
   windowWidth: number
   windowHeight: number
+  windowActive?: boolean
+  sessionAttached?: boolean
   mainPane: TmuxPaneInfo | null
   agentPanes: TmuxPaneInfo[]
 }

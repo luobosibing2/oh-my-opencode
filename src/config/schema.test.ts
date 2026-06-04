@@ -1,3 +1,5 @@
+/// <reference types="bun-types" />
+
 import { describe, expect, test } from "bun:test"
 import {
   AgentOverrideConfigSchema,
@@ -6,6 +8,7 @@ import {
   BuiltinCategoryNameSchema,
   CategoryConfigSchema,
   ExperimentalConfigSchema,
+  FallbackModelObjectSchema,
   GitMasterConfigSchema,
   HookNameSchema,
   OhMyOpenCodeConfigSchema,
@@ -145,6 +148,37 @@ describe("disabled_mcps schema", () => {
   })
 })
 
+describe("OhMyOpenCodeConfigSchema - model_capabilities", () => {
+  test("accepts valid model capabilities config", () => {
+    const input = {
+      model_capabilities: {
+        enabled: true,
+        auto_refresh_on_start: true,
+        refresh_timeout_ms: 5000,
+        source_url: "https://models.dev/api.json",
+      },
+    }
+
+    const result = OhMyOpenCodeConfigSchema.safeParse(input)
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.model_capabilities).toEqual(input.model_capabilities)
+    }
+  })
+
+  test("rejects invalid model capabilities config", () => {
+    const result = OhMyOpenCodeConfigSchema.safeParse({
+      model_capabilities: {
+        refresh_timeout_ms: -1,
+        source_url: "not-a-url",
+      },
+    })
+
+    expect(result.success).toBe(false)
+  })
+})
+
 describe("AgentOverrideConfigSchema", () => {
   describe("category field", () => {
     test("accepts category as optional string", () => {
@@ -266,7 +300,7 @@ describe("AgentOverrideConfigSchema", () => {
   describe("backward compatibility", () => {
     test("still accepts model field (deprecated)", () => {
       // given
-      const config = { model: "openai/gpt-5.2" }
+      const config = { model: "openai/gpt-5.4" }
 
       // when
       const result = AgentOverrideConfigSchema.safeParse(config)
@@ -274,14 +308,14 @@ describe("AgentOverrideConfigSchema", () => {
       // then
       expect(result.success).toBe(true)
       if (result.success) {
-        expect(result.data.model).toBe("openai/gpt-5.2")
+        expect(result.data.model).toBe("openai/gpt-5.4")
       }
     })
 
     test("accepts both model and category (deprecated usage)", () => {
       // given - category should take precedence at runtime, but both should validate
       const config = { 
-        model: "openai/gpt-5.2",
+        model: "openai/gpt-5.4",
         category: "ultrabrain"
       }
 
@@ -291,7 +325,7 @@ describe("AgentOverrideConfigSchema", () => {
       // then
       expect(result.success).toBe(true)
       if (result.success) {
-        expect(result.data.model).toBe("openai/gpt-5.2")
+        expect(result.data.model).toBe("openai/gpt-5.4")
         expect(result.data.category).toBe("ultrabrain")
       }
     })
@@ -343,7 +377,7 @@ describe("AgentOverrideConfigSchema", () => {
 describe("CategoryConfigSchema", () => {
   test("accepts variant as optional string", () => {
     // given
-    const config = { model: "openai/gpt-5.2", variant: "xhigh" }
+    const config = { model: "openai/gpt-5.4", variant: "xhigh" }
 
     // when
     const result = CategoryConfigSchema.safeParse(config)
@@ -369,9 +403,91 @@ describe("CategoryConfigSchema", () => {
     }
   })
 
+  test("accepts reasoningEffort values none and minimal", () => {
+    // given
+    const noneConfig = { reasoningEffort: "none" }
+    const minimalConfig = { reasoningEffort: "minimal" }
+
+    // when
+    const noneResult = CategoryConfigSchema.safeParse(noneConfig)
+    const minimalResult = CategoryConfigSchema.safeParse(minimalConfig)
+
+    // then
+    expect(noneResult.success).toBe(true)
+    expect(minimalResult.success).toBe(true)
+    if (noneResult.success) {
+      expect(noneResult.data.reasoningEffort).toBe("none")
+    }
+    if (minimalResult.success) {
+      expect(minimalResult.data.reasoningEffort).toBe("minimal")
+    }
+  })
+
+  // regression: issue #4165 — doctor used to falsely report "max" invalid; lock
+  // the full enum and assert all three reasoningEffort schemas agree.
+  test("accepts reasoningEffort 'max' on CategoryConfigSchema", () => {
+    // given
+    const config = { reasoningEffort: "max" }
+
+    // when
+    const result = CategoryConfigSchema.safeParse(config)
+
+    // then
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.reasoningEffort).toBe("max")
+    }
+  })
+
+  test("accepts reasoningEffort 'max' on AgentOverrideConfigSchema", () => {
+    // given
+    const config = { reasoningEffort: "max" }
+
+    // when
+    const result = AgentOverrideConfigSchema.safeParse(config)
+
+    // then
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.reasoningEffort).toBe("max")
+    }
+  })
+
+  test("accepts reasoningEffort 'max' on FallbackModelObjectSchema", () => {
+    // given
+    const config = { model: "openai/gpt-5", reasoningEffort: "max" }
+
+    // when
+    const result = FallbackModelObjectSchema.safeParse(config)
+
+    // then
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.reasoningEffort).toBe("max")
+    }
+  })
+
+  test("all three reasoningEffort enums share the same accepted values", () => {
+    // given: the full list of values declared in src/config/schema/*.ts
+    const validValues = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const
+    const schemas = [
+      { name: "Category", schema: CategoryConfigSchema, build: (v: string) => ({ reasoningEffort: v }) },
+      { name: "AgentOverride", schema: AgentOverrideConfigSchema, build: (v: string) => ({ reasoningEffort: v }) },
+      { name: "FallbackModel", schema: FallbackModelObjectSchema, build: (v: string) => ({ model: "openai/gpt-5", reasoningEffort: v }) },
+    ]
+
+    // when / then: every schema accepts every value — guards against drift
+    for (const { name, schema, build } of schemas) {
+      for (const value of validValues) {
+        const result = schema.safeParse(build(value))
+        expect(result.success, `${name}Schema should accept reasoningEffort '${value}'`).toBe(true)
+      }
+    }
+  })
+
   test("rejects non-string variant", () => {
     // given
-    const config = { model: "openai/gpt-5.2", variant: 123 }
+    const config = { model: "openai/gpt-5.4", variant: 123 }
 
     // when
     const result = CategoryConfigSchema.safeParse(config)
@@ -405,6 +521,28 @@ describe("HookNameSchema", () => {
     //#then
     expect(result.success).toBe(false)
   })
+
+  test("rejects removed delegate-task-english-directive hook name", () => {
+    //#given
+    const input = "delegate-task-english-directive"
+
+    //#when
+    const result = HookNameSchema.safeParse(input)
+
+    //#then
+    expect(result.success).toBe(false)
+  })
+
+  test("rejects removed context-window-monitor hook name", () => {
+    //#given
+    const input = "context-window-monitor"
+
+    //#when
+    const result = HookNameSchema.safeParse(input)
+
+    //#then
+    expect(result.success).toBe(false)
+  })
 })
 
 describe("Sisyphus-Junior agent override", () => {
@@ -413,7 +551,7 @@ describe("Sisyphus-Junior agent override", () => {
     const config = {
       agents: {
         "sisyphus-junior": {
-          model: "openai/gpt-5.2",
+          model: "openai/gpt-5.4",
           temperature: 0.2,
         },
       },
@@ -426,7 +564,7 @@ describe("Sisyphus-Junior agent override", () => {
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data.agents?.["sisyphus-junior"]).toBeDefined()
-      expect(result.data.agents?.["sisyphus-junior"]?.model).toBe("openai/gpt-5.2")
+      expect(result.data.agents?.["sisyphus-junior"]?.model).toBe("openai/gpt-5.4")
       expect(result.data.agents?.["sisyphus-junior"]?.temperature).toBe(0.2)
     }
   })
@@ -883,6 +1021,64 @@ describe("GitMasterConfigSchema", () => {
 
     //#then
     expect(result.success).toBe(false)
+  })
+
+  test("accepts shell-safe git_env_prefix", () => {
+    const config = { git_env_prefix: "MY_HOOK=active" }
+
+    const result = GitMasterConfigSchema.safeParse(config)
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.git_env_prefix).toBe("MY_HOOK=active")
+    }
+  })
+
+  test("rejects git_env_prefix with shell metacharacters", () => {
+    const config = { git_env_prefix: "A=1; rm -rf /" }
+
+    const result = GitMasterConfigSchema.safeParse(config)
+
+    expect(result.success).toBe(false)
+  })
+})
+
+describe("OhMyOpenCodeConfigSchema - git_master defaults (#2040)", () => {
+  test("git_master defaults are applied when section is missing from config", () => {
+    //#given
+    const config = {}
+
+    //#when
+    const result = OhMyOpenCodeConfigSchema.safeParse(config)
+
+    //#then
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.git_master).toBeDefined()
+      expect(result.data.git_master.commit_footer).toBe(true)
+      expect(result.data.git_master.include_co_authored_by).toBe(true)
+      expect(result.data.git_master.git_env_prefix).toBe("GIT_MASTER=1")
+    }
+  })
+
+  test("git_master respects explicit false values", () => {
+    //#given
+    const config = {
+      git_master: {
+        commit_footer: false,
+        include_co_authored_by: false,
+      },
+    }
+
+    //#when
+    const result = OhMyOpenCodeConfigSchema.safeParse(config)
+
+    //#then
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.git_master.commit_footer).toBe(false)
+      expect(result.data.git_master.include_co_authored_by).toBe(false)
+    }
   })
 })
 

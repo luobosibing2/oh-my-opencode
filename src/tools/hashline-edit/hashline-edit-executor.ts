@@ -1,14 +1,18 @@
 import type { ToolContext } from "@opencode-ai/plugin/tool"
-import { storeToolMetadata } from "../../features/tool-metadata-store"
+import { publishToolMetadata } from "../../features/tool-metadata-store"
+import { bunFile, bunWrite } from "../../shared/bun-file-shim"
 import { applyHashlineEditsWithReport } from "./edit-operations"
-import { countLineDiffs, generateUnifiedDiff, toHashlineContent } from "./diff-utils"
+import { countLineDiffs, generateUnifiedDiff } from "./diff-utils"
 import { canonicalizeFileText, restoreFileText } from "./file-text-canonicalization"
-import { generateHashlineDiff } from "./hashline-edit-diff"
+import { normalizeHashlineEdits, type RawHashlineEdit } from "./normalize-edits"
 import type { HashlineEdit } from "./types"
+import { HashlineMismatchError } from "./validation"
+import { runFormattersForFile, type FormatterClient } from "./formatter-trigger"
+import type { PluginContext } from "../../plugin/types"
 
 interface HashlineEditArgs {
   filePath: string
-  edits: HashlineEdit[]
+  edits: RawHashlineEdit[]
   delete?: boolean
   rename?: string
 }
@@ -23,16 +27,9 @@ type ToolContextWithMetadata = ToolContextWithCallID & {
   metadata?: (value: unknown) => void
 }
 
-function resolveToolCallID(ctx: ToolContextWithCallID): string | undefined {
-  if (typeof ctx.callID === "string" && ctx.callID.trim() !== "") return ctx.callID
-  if (typeof ctx.callId === "string" && ctx.callId.trim() !== "") return ctx.callId
-  if (typeof ctx.call_id === "string" && ctx.call_id.trim() !== "") return ctx.call_id
-  return undefined
-}
-
 function canCreateFromMissingFile(edits: HashlineEdit[]): boolean {
   if (edits.length === 0) return false
-  return edits.every((edit) => edit.type === "append" || edit.type === "prepend")
+  return edits.every((edit) => (edit.op === "append" || edit.op === "prepend") && !edit.pos)
 }
 
 function buildSuccessMeta(
@@ -44,6 +41,17 @@ function buildSuccessMeta(
 ) {
   const unifiedDiff = generateUnifiedDiff(beforeContent, afterContent, effectivePath)
   const { additions, deletions } = countLineDiffs(beforeContent, afterContent)
+  const beforeLines = beforeContent.split("\n")
+  const afterLines = afterContent.split("\n")
+  const maxLength = Math.max(beforeLines.length, afterLines.length)
+  let firstChangedLine: number | undefined
+
+  for (let index = 0; index < maxLength; index += 1) {
+    if ((beforeLines[index] ?? "") !== (afterLines[index] ?? "")) {
+      firstChangedLine = index + 1
+      break
+    }
+  }
 
   return {
     title: effectivePath,
@@ -54,6 +62,7 @@ function buildSuccessMeta(
       diff: unifiedDiff,
       noopEdits,
       deduplicatedEdits,
+      firstChangedLine,
       filediff: {
         file: effectivePath,
         path: effectivePath,
@@ -67,23 +76,26 @@ function buildSuccessMeta(
   }
 }
 
-export async function executeHashlineEditTool(args: HashlineEditArgs, context: ToolContext): Promise<string> {
+export async function executeHashlineEditTool(args: HashlineEditArgs, context: ToolContext, pluginCtx?: PluginContext): Promise<string> {
   try {
     const metadataContext = context as ToolContextWithMetadata
     const filePath = args.filePath
-    const { edits, delete: deleteMode, rename } = args
+    const { delete: deleteMode, rename } = args
 
     if (deleteMode && rename) {
       return "Error: delete and rename cannot be used together"
     }
-    if (!deleteMode && (!edits || !Array.isArray(edits) || edits.length === 0)) {
-      return "Error: edits parameter must be a non-empty array"
-    }
-    if (deleteMode && edits.length > 0) {
+    if (deleteMode && args.edits.length > 0) {
       return "Error: delete mode requires edits to be an empty array"
     }
 
-    const file = Bun.file(filePath)
+    if (!deleteMode && (!args.edits || !Array.isArray(args.edits) || args.edits.length === 0)) {
+      return "Error: edits parameter must be a non-empty array"
+    }
+
+    const edits = deleteMode ? [] : normalizeHashlineEdits(args.edits)
+
+    const file = bunFile(filePath)
     const exists = await file.exists()
     if (!exists && !deleteMode && !canCreateFromMissingFile(edits)) {
       return `Error: File not found: ${filePath}`
@@ -91,7 +103,7 @@ export async function executeHashlineEditTool(args: HashlineEditArgs, context: T
 
     if (deleteMode) {
       if (!exists) return `Error: File not found: ${filePath}`
-      await Bun.file(filePath).delete()
+      await bunFile(filePath).delete()
       return `Successfully deleted ${filePath}`
     }
 
@@ -100,18 +112,47 @@ export async function executeHashlineEditTool(args: HashlineEditArgs, context: T
 
     const applyResult = applyHashlineEditsWithReport(oldEnvelope.content, edits)
     const canonicalNewContent = applyResult.content
+
+    if (canonicalNewContent === oldEnvelope.content && !rename) {
+      let diagnostic = `No changes made to ${filePath}. The edits produced identical content.`
+      if (applyResult.noopEdits > 0) {
+        diagnostic += ` No-op edits: ${applyResult.noopEdits}. Re-read the file and provide content that differs from current lines.`
+      }
+      return `Error: ${diagnostic}`
+    }
+
     const writeContent = restoreFileText(canonicalNewContent, oldEnvelope)
 
-    await Bun.write(filePath, writeContent)
+    await bunWrite(filePath, writeContent)
+
+    if (pluginCtx?.client) {
+      await runFormattersForFile(pluginCtx.client as FormatterClient, context.directory, filePath)
+      const formattedContent = Buffer.from(await bunFile(filePath).arrayBuffer()).toString("utf8")
+      if (formattedContent !== writeContent) {
+        const formattedEnvelope = canonicalizeFileText(formattedContent)
+        const formattedMeta = buildSuccessMeta(
+          filePath,
+          oldEnvelope.content,
+          formattedEnvelope.content,
+          applyResult.noopEdits,
+          applyResult.deduplicatedEdits
+        )
+        await publishToolMetadata(metadataContext, formattedMeta)
+        if (rename && rename !== filePath) {
+          await bunWrite(rename, formattedContent)
+          await bunFile(filePath).delete()
+          return `Moved ${filePath} to ${rename}`
+        }
+        return `Updated ${filePath}`
+      }
+    }
 
     if (rename && rename !== filePath) {
-      await Bun.write(rename, writeContent)
-      await Bun.file(filePath).delete()
+      await bunWrite(rename, writeContent)
+      await bunFile(filePath).delete()
     }
 
     const effectivePath = rename && rename !== filePath ? rename : filePath
-    const diff = generateHashlineDiff(oldEnvelope.content, canonicalNewContent, effectivePath)
-    const newHashlined = toHashlineContent(canonicalNewContent)
     const meta = buildSuccessMeta(
       effectivePath,
       oldEnvelope.content,
@@ -120,25 +161,16 @@ export async function executeHashlineEditTool(args: HashlineEditArgs, context: T
       applyResult.deduplicatedEdits
     )
 
-    if (typeof metadataContext.metadata === "function") {
-      metadataContext.metadata(meta)
+    await publishToolMetadata(metadataContext, meta)
+
+    if (rename && rename !== filePath) {
+      return `Moved ${filePath} to ${rename}`
     }
 
-    const callID = resolveToolCallID(metadataContext)
-    if (callID) {
-      storeToolMetadata(context.sessionID, callID, meta)
-    }
-
-    return `Successfully applied ${edits.length} edit(s) to ${effectivePath}
-No-op edits: ${applyResult.noopEdits}, deduplicated edits: ${applyResult.deduplicatedEdits}
-
-${diff}
-
-Updated file (LINE#ID:content):
-${newHashlined}`
+    return `Updated ${effectivePath}`
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (message.toLowerCase().includes("hash")) {
+    if (error instanceof HashlineMismatchError) {
       return `Error: hash mismatch - ${message}\nTip: reuse LINE#ID entries from the latest read/edit output, or batch related edits in one call.`
     }
     return `Error: ${message}`

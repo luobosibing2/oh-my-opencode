@@ -1,4 +1,13 @@
-import type { AgentConfig } from "@opencode-ai/sdk"
+import type { AgentConfig } from "@opencode-ai/sdk";
+
+export {
+  isClaudeOpus47Model,
+  isGeminiModel,
+  isGlmModel,
+  isGptModel,
+  isKimiK2Model,
+  isMiniMaxModel,
+} from "@oh-my-opencode/model-core";
 
 /**
  * Agent mode determines UI model selection behavior:
@@ -6,34 +15,38 @@ import type { AgentConfig } from "@opencode-ai/sdk"
  * - "subagent": Uses own fallback chain, ignores UI selection (oracle, explore, etc.)
  * - "all": Available in both contexts (OpenCode compatibility)
  */
-export type AgentMode = "primary" | "subagent" | "all"
+export type AgentMode = "primary" | "subagent" | "all";
 
 /**
  * Agent factory function with static mode property.
  * Mode is exposed as static property for pre-instantiation access.
  */
 export type AgentFactory = ((model: string) => AgentConfig) & {
-  mode: AgentMode
-}
+  mode: AgentMode;
+};
 
 /**
  * Agent category for grouping in Sisyphus prompt sections
  */
-export type AgentCategory = "exploration" | "specialist" | "advisor" | "utility"
+export type AgentCategory =
+  | "exploration"
+  | "specialist"
+  | "advisor"
+  | "utility";
 
 /**
  * Cost classification for Tool Selection table
  */
-export type AgentCost = "FREE" | "CHEAP" | "EXPENSIVE"
+export type AgentCost = "FREE" | "CHEAP" | "EXPENSIVE";
 
 /**
  * Delegation trigger for Sisyphus prompt's Delegation Table
  */
 export interface DelegationTrigger {
   /** Domain of work (e.g., "Frontend UI/UX") */
-  domain: string
+  domain: string;
   /** When to delegate (e.g., "Visual changes only...") */
-  trigger: string
+  trigger: string;
 }
 
 /**
@@ -42,55 +55,54 @@ export interface DelegationTrigger {
  */
 export interface AgentPromptMetadata {
   /** Category for grouping in prompt sections */
-  category: AgentCategory
+  category: AgentCategory;
 
   /** Cost classification for Tool Selection table */
-  cost: AgentCost
+  cost: AgentCost;
 
   /** Domain triggers for Delegation Table */
-  triggers: DelegationTrigger[]
+  triggers: DelegationTrigger[];
 
   /** When to use this agent (for detailed sections) */
-  useWhen?: string[]
+  useWhen?: string[];
 
   /** When NOT to use this agent */
-  avoidWhen?: string[]
+  avoidWhen?: string[];
 
   /** Optional dedicated prompt section (markdown) - for agents like Oracle that have special sections */
-  dedicatedSection?: string
+  dedicatedSection?: string;
 
   /** Nickname/alias used in prompt (e.g., "Oracle" instead of "oracle") */
-  promptAlias?: string
+  promptAlias?: string;
 
   /** Key triggers that should appear in Phase 0 (e.g., "External library mentioned → fire librarian") */
-  keyTrigger?: string
+  keyTrigger?: string;
 }
 
 function extractModelName(model: string): string {
-  return model.includes("/") ? model.split("/").pop() ?? model : model
+  return model.includes("/") ? (model.split("/").pop() ?? model) : model;
 }
 
-const GPT_MODEL_PREFIXES = ["gpt-", "gpt4", "o1", "o3", "o4"]
+const GPT_NATIVE_SISYPHUS_RE = /gpt-5[.-](?:[4-9]|\d{2,})/i;
 
-export function isGptModel(model: string): boolean {
-  if (model.startsWith("openai/") || model.startsWith("github-copilot/gpt-"))
-    return true
-
-  const modelName = extractModelName(model).toLowerCase()
-  return GPT_MODEL_PREFIXES.some((prefix) => modelName.startsWith(prefix))
+export function isGptNativeSisyphusModel(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase();
+  return GPT_NATIVE_SISYPHUS_RE.test(modelName);
 }
 
-const GEMINI_PROVIDERS = ["google/", "google-vertex/"]
+export function isGpt5_5Model(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase();
+  return modelName.includes("gpt-5.5") || modelName.includes("gpt-5-5");
+}
 
-export function isGeminiModel(model: string): boolean {
-  if (GEMINI_PROVIDERS.some((prefix) => model.startsWith(prefix)))
-    return true
+export function isGpt5_3CodexModel(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase();
+  return modelName.includes("gpt-5.3-codex") || modelName.includes("gpt-5-3-codex");
+}
 
-  if (model.startsWith("github-copilot/") && extractModelName(model).toLowerCase().startsWith("gemini"))
-    return true
-
-  const modelName = extractModelName(model).toLowerCase()
-  return modelName.startsWith("gemini-")
+export function isGpt5_2Model(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase();
+  return modelName.includes("gpt-5.2") || modelName.includes("gpt-5-2");
 }
 
 export type BuiltinAgentName =
@@ -103,17 +115,21 @@ export type BuiltinAgentName =
   | "metis"
   | "momus"
   | "atlas"
+  | "sisyphus-junior";
 
-export type OverridableAgentName =
-  | "build"
-  | BuiltinAgentName
+export type OverridableAgentName = "build" | BuiltinAgentName;
 
-export type AgentName = BuiltinAgentName
+export type AgentName = BuiltinAgentName;
 
 export type AgentOverrideConfig = Partial<AgentConfig> & {
-  prompt_append?: string
-  variant?: string
-  fallback_models?: string | string[]
-}
+  category?: string;
+  prompt_append?: string;
+  skills?: string[];
+  tools?: Record<string, boolean>;
+  variant?: string;
+  fallback_models?: string | (string | import("../config/schema/fallback-models").FallbackModelObject)[];
+};
 
-export type AgentOverrides = Partial<Record<OverridableAgentName, AgentOverrideConfig>>
+export type AgentOverrides = Partial<
+  Record<OverridableAgentName, AgentOverrideConfig>
+>;

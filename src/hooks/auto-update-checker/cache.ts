@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { PACKAGE_NAME, USER_CONFIG_DIR } from "./constants"
+import { ACCEPTED_PACKAGE_NAMES, CACHE_DIR, PACKAGE_NAME, getUserConfigDir } from "./constants"
 import { log } from "../../shared/logger"
 
 interface BunLockfile {
@@ -12,69 +12,135 @@ interface BunLockfile {
   packages?: Record<string, unknown>
 }
 
+interface InvalidatePackageOptions {
+  acceptedPackageNames?: readonly string[]
+  cacheDir?: string
+  defaultPackageName?: string
+  userConfigDir?: string
+}
+
 function stripTrailingCommas(json: string): string {
   return json.replace(/,(\s*[}\]])/g, "$1")
 }
 
-function removeFromBunLock(packageName: string): boolean {
-  const lockPath = path.join(USER_CONFIG_DIR, "bun.lock")
-  if (!fs.existsSync(lockPath)) return false
-
+function removeFromTextBunLock(lockPath: string, packageNames: readonly string[]): boolean {
   try {
     const content = fs.readFileSync(lockPath, "utf-8")
     const lock = JSON.parse(stripTrailingCommas(content)) as BunLockfile
-    let modified = false
+    let removed = false
 
-    if (lock.workspaces?.[""]?.dependencies?.[packageName]) {
-      delete lock.workspaces[""].dependencies[packageName]
-      modified = true
+    for (const packageName of packageNames) {
+      if (lock.packages?.[packageName]) {
+        delete lock.packages[packageName]
+        log(`[auto-update-checker] Removed from bun.lock: ${packageName}`)
+        removed = true
+      }
     }
 
-    if (lock.packages?.[packageName]) {
-      delete lock.packages[packageName]
-      modified = true
-    }
-
-    if (modified) {
+    if (removed) {
       fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2))
-      log(`[auto-update-checker] Removed from bun.lock: ${packageName}`)
     }
 
-    return modified
+    return removed
   } catch {
     return false
   }
 }
 
-export function invalidatePackage(packageName: string = PACKAGE_NAME): boolean {
+function deleteBinaryBunLock(lockPath: string): boolean {
   try {
-    const pkgDir = path.join(USER_CONFIG_DIR, "node_modules", packageName)
-    const pkgJsonPath = path.join(USER_CONFIG_DIR, "package.json")
+    fs.unlinkSync(lockPath)
+    log(`[auto-update-checker] Removed bun.lockb to force re-resolution`)
+    return true
+  } catch {
+    return false
+  }
+}
 
-    let packageRemoved = false
-    let dependencyRemoved = false
-    let lockRemoved = false
+function removeFromBunLock(cacheDir: string, packageNames: readonly string[]): boolean {
+  const textLockPath = path.join(cacheDir, "bun.lock")
+  const binaryLockPath = path.join(cacheDir, "bun.lockb")
 
-    if (fs.existsSync(pkgDir)) {
-      fs.rmSync(pkgDir, { recursive: true, force: true })
-      log(`[auto-update-checker] Package removed: ${pkgDir}`)
-      packageRemoved = true
+  if (fs.existsSync(textLockPath)) {
+    return removeFromTextBunLock(textLockPath, packageNames)
+  }
+
+  // Binary lockfiles cannot be parsed; deletion forces bun to re-resolve
+  if (fs.existsSync(binaryLockPath)) {
+    return deleteBinaryBunLock(binaryLockPath)
+  }
+
+  return false
+}
+
+function getInvalidationPackageNames(
+  packageName: string,
+  defaultPackageName: string,
+  acceptedPackageNames: readonly string[]
+): readonly string[] {
+  if (packageName === defaultPackageName) {
+    return acceptedPackageNames
+  }
+
+  return [packageName]
+}
+
+function removeSpecifierRootDirs(cacheDir: string, packageNames: readonly string[]): boolean {
+  const parentDirs = [cacheDir, path.join(cacheDir, "packages")]
+  const prefixes = packageNames.map(packageName => `${packageName}@`)
+  let removed = false
+
+  for (const parentDir of parentDirs) {
+    if (!fs.existsSync(parentDir)) {
+      continue
     }
 
-    if (fs.existsSync(pkgJsonPath)) {
-      const content = fs.readFileSync(pkgJsonPath, "utf-8")
-      const pkgJson = JSON.parse(content)
-      if (pkgJson.dependencies?.[packageName]) {
-        delete pkgJson.dependencies[packageName]
-        fs.writeFileSync(pkgJsonPath, JSON.stringify(pkgJson, null, 2))
-        log(`[auto-update-checker] Dependency removed from package.json: ${packageName}`)
-        dependencyRemoved = true
+    for (const entry of fs.readdirSync(parentDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !prefixes.some(prefix => entry.name.startsWith(prefix))) {
+        continue
+      }
+
+      const specifierDir = path.join(parentDir, entry.name)
+      fs.rmSync(specifierDir, { recursive: true, force: true })
+      log(`[auto-update-checker] Specifier cache removed: ${specifierDir}`)
+      removed = true
+    }
+  }
+
+  return removed
+}
+
+export function invalidatePackage(
+  packageName: string = PACKAGE_NAME,
+  options: InvalidatePackageOptions = {}
+): boolean {
+  try {
+    const acceptedPackageNames = options.acceptedPackageNames ?? ACCEPTED_PACKAGE_NAMES
+    const cacheDir = options.cacheDir ?? CACHE_DIR
+    const defaultPackageName = options.defaultPackageName ?? PACKAGE_NAME
+    const userConfigDir = options.userConfigDir ?? getUserConfigDir()
+    const packageNames = getInvalidationPackageNames(packageName, defaultPackageName, acceptedPackageNames)
+    const pkgDirs = packageNames.flatMap(name => [
+      path.join(userConfigDir, "node_modules", name),
+      path.join(cacheDir, "node_modules", name),
+    ])
+
+    let packageRemoved = false
+    let lockRemoved = false
+    let specifierRemoved = false
+
+    for (const pkgDir of pkgDirs) {
+      if (fs.existsSync(pkgDir)) {
+        fs.rmSync(pkgDir, { recursive: true, force: true })
+        log(`[auto-update-checker] Package removed: ${pkgDir}`)
+        packageRemoved = true
       }
     }
 
-    lockRemoved = removeFromBunLock(packageName)
+    specifierRemoved = removeSpecifierRootDirs(cacheDir, packageNames)
+    lockRemoved = removeFromBunLock(cacheDir, packageNames)
 
-    if (!packageRemoved && !dependencyRemoved && !lockRemoved) {
+    if (!packageRemoved && !specifierRemoved && !lockRemoved) {
       log(`[auto-update-checker] Package not found, nothing to invalidate: ${packageName}`)
       return false
     }

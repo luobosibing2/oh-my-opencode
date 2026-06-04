@@ -6,25 +6,51 @@
 export type ClaudeHookEvent =
   | "PreToolUse"
   | "PostToolUse"
+  | "PostToolUseFailure"
+  | "PermissionRequest"
   | "UserPromptSubmit"
+  | "Notification"
   | "Stop"
+  | "SubagentStart"
+  | "SubagentStop"
+  | "SessionStart"
+  | "SessionEnd"
   | "PreCompact"
 
 export interface HookMatcher {
   matcher: string
-  hooks: HookCommand[]
+  hooks: HookAction[]
 }
 
 export interface HookCommand {
   type: "command"
   command: string
+  /** Env vars allowed to pass through to the spawned process (plugin-sourced hooks are intersected with mcp_env_allowlist) */
+  allowedEnvVars?: string[]
 }
+
+export interface HookHttp {
+  type: "http"
+  url: string
+  headers?: Record<string, string>
+  allowedEnvVars?: string[]
+  timeout?: number
+}
+
+export type HookAction = HookCommand | HookHttp
 
 export interface ClaudeHooksConfig {
   PreToolUse?: HookMatcher[]
   PostToolUse?: HookMatcher[]
+  PostToolUseFailure?: HookMatcher[]
+  PermissionRequest?: HookMatcher[]
   UserPromptSubmit?: HookMatcher[]
+  Notification?: HookMatcher[]
   Stop?: HookMatcher[]
+  SubagentStart?: HookMatcher[]
+  SubagentStop?: HookMatcher[]
+  SessionStart?: HookMatcher[]
+  SessionEnd?: HookMatcher[]
   PreCompact?: HookMatcher[]
 }
 
@@ -201,4 +227,12 @@ export interface ClaudeCodeMessage {
 export interface PluginConfig {
   disabledHooks?: boolean | ClaudeHookEvent[]
   keywordDetectorDisabled?: boolean
+}
+
+/**
+ * Plugin hooks configuration shape.
+ * Replaces the loose `Array<{ hooks?: Record<string, unknown> }>` with a proper typed interface.
+ */
+export interface PluginHooksConfig {
+  hooks?: Partial<Record<ClaudeHookEvent, unknown[]>>
 }

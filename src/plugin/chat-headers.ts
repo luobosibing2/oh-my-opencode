@@ -1,9 +1,22 @@
+import type { OhMyOpenCodeConfig } from "../config"
 import { OMO_INTERNAL_INITIATOR_MARKER } from "../shared"
+import {
+  getPlanOnlyModelRoutingSettings,
+  isPlanAgent,
+  isPlanOnlyModel,
+  PLAN_ONLY_ROUTE_HEADER,
+  PLAN_ONLY_ROUTE_HEADER_VALUE,
+} from "../shared/plan-only-model-routing"
 import type { PluginContext } from "./types"
 
 type ChatHeadersInput = {
   sessionID: string
+  agent?: string
   provider: { id: string }
+  model?: {
+    providerID: string
+    modelID: string
+  }
   message: {
     id?: string
     role?: string
@@ -25,16 +38,34 @@ function buildChatHeadersInput(raw: unknown): ChatHeadersInput | null {
   if (!isRecord(raw)) return null
 
   const sessionID = raw.sessionID
+  const agent = raw.agent
   const provider = raw.provider
+  const model = raw.model
   const message = raw.message
 
   if (typeof sessionID !== "string") return null
   if (!isRecord(provider) || typeof provider.id !== "string") return null
   if (!isRecord(message)) return null
 
+  let normalizedModel: ChatHeadersInput["model"] | undefined
+  if (isRecord(model)) {
+    const providerID = typeof model.providerID === "string" ? model.providerID : provider.id
+    const modelID =
+      typeof model.modelID === "string"
+        ? model.modelID
+        : typeof model.id === "string"
+          ? model.id
+          : undefined
+    if (providerID && modelID) {
+      normalizedModel = { providerID, modelID }
+    }
+  }
+
   return {
     sessionID,
+    agent: typeof agent === "string" ? agent : undefined,
     provider: { id: provider.id },
+    model: normalizedModel,
     message: {
       id: typeof message.id === "string" ? message.id : undefined,
       role: typeof message.role === "string" ? message.role : undefined,
@@ -114,15 +145,37 @@ async function isOmoInternalMessage(input: ChatHeadersInput, client: PluginConte
   return hasInternalMarker(client, input.sessionID, input.message.id)
 }
 
-export function createChatHeadersHandler(args: { ctx: PluginContext }): (input: unknown, output: unknown) => Promise<void> {
-  const { ctx } = args
+export function createChatHeadersHandler(args: {
+  ctx: PluginContext
+  pluginConfig?: OhMyOpenCodeConfig
+}): (input: unknown, output: unknown) => Promise<void> {
+  const { ctx, pluginConfig } = args
 
   return async (input, output): Promise<void> => {
     const normalizedInput = buildChatHeadersInput(input)
     if (!normalizedInput) return
     if (!isChatHeadersOutput(output)) return
 
+    const planOnlySettings = getPlanOnlyModelRoutingSettings(pluginConfig)
+    if (
+      isPlanAgent(normalizedInput.agent) &&
+      isPlanOnlyModel(planOnlySettings, normalizedInput.model)
+    ) {
+      output.headers[PLAN_ONLY_ROUTE_HEADER] = PLAN_ONLY_ROUTE_HEADER_VALUE
+    }
+
     if (!isCopilotProvider(normalizedInput.provider.id)) return
+
+    // Do not override x-initiator when @ai-sdk/github-copilot is active.
+    // OpenCode's copilot fetch wrapper already sets x-initiator based on
+    // the actual request body content. Overriding it here causes a mismatch
+    // that the Copilot API rejects with "invalid initiator".
+    const model = isRecord(input) && isRecord((input as Record<string, unknown>).model)
+      ? (input as Record<string, unknown>).model as Record<string, unknown>
+      : undefined
+    const api = model && isRecord(model.api) ? model.api as Record<string, unknown> : undefined
+    if (api?.npm === "@ai-sdk/github-copilot") return
+
     if (!(await isOmoInternalMessage(normalizedInput, ctx.client))) return
 
     output.headers["x-initiator"] = "agent"

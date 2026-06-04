@@ -1,8 +1,12 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import { isGptModel } from "../../agents/types"
-import { getSessionAgent, updateSessionAgent } from "../../features/claude-code-session-state"
+import {
+  getSessionAgent,
+  resolveRegisteredAgentName,
+  updateSessionAgent,
+} from "../../features/claude-code-session-state"
 import { log } from "../../shared"
-import { getAgentConfigKey, getAgentDisplayName } from "../../shared/agent-display-names"
+import { getAgentConfigKey } from "../../shared/agent-display-names"
 
 const TOAST_TITLE = "NEVER Use Hephaestus with Non-GPT"
 const TOAST_MESSAGE = [
@@ -10,14 +14,16 @@ const TOAST_MESSAGE = [
   "Hephaestus is trash without GPT.",
   "For Claude/Kimi/GLM models, always use Sisyphus.",
 ].join("\n")
-const SISYPHUS_DISPLAY = getAgentDisplayName("sisyphus")
+type NoHephaestusNonGptHookOptions = {
+  allowNonGptModel?: boolean
+}
 
-function showToast(ctx: PluginInput, sessionID: string): void {
+function showToast(ctx: PluginInput, sessionID: string, variant: "error" | "warning"): void {
   ctx.client.tui.showToast({
     body: {
       title: TOAST_TITLE,
       message: TOAST_MESSAGE,
-      variant: "error",
+      variant,
       duration: 10000,
     },
   }).catch((error) => {
@@ -28,7 +34,10 @@ function showToast(ctx: PluginInput, sessionID: string): void {
   })
 }
 
-export function createNoHephaestusNonGptHook(ctx: PluginInput) {
+export function createNoHephaestusNonGptHook(
+  ctx: PluginInput,
+  options?: NoHephaestusNonGptHookOptions,
+) {
   return {
     "chat.message": async (input: {
       sessionID: string
@@ -40,14 +49,18 @@ export function createNoHephaestusNonGptHook(ctx: PluginInput) {
       const rawAgent = input.agent ?? getSessionAgent(input.sessionID) ?? ""
       const agentKey = getAgentConfigKey(rawAgent)
       const modelID = input.model?.modelID
+      const allowNonGptModel = options?.allowNonGptModel === true
 
       if (agentKey === "hephaestus" && modelID && !isGptModel(modelID)) {
-        showToast(ctx, input.sessionID)
-        input.agent = SISYPHUS_DISPLAY
-        if (output?.message) {
-          output.message.agent = SISYPHUS_DISPLAY
+        showToast(ctx, input.sessionID, allowNonGptModel ? "warning" : "error")
+        if (allowNonGptModel) {
+          return
         }
-        updateSessionAgent(input.sessionID, SISYPHUS_DISPLAY)
+        input.agent = resolveRegisteredAgentName("sisyphus") ?? "sisyphus"
+        if (output?.message) {
+          output.message.agent = resolveRegisteredAgentName("sisyphus") ?? "sisyphus"
+        }
+        updateSessionAgent(input.sessionID, "sisyphus")
       }
     },
   }

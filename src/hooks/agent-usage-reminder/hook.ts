@@ -6,6 +6,9 @@ import {
 } from "./storage";
 import { TARGET_TOOLS, AGENT_TOOLS, REMINDER_MESSAGE } from "./constants";
 import type { AgentUsageState } from "./types";
+import { getSessionAgent } from "../../features/claude-code-session-state";
+import { getAgentConfigKey } from "../../shared/agent-display-names";
+import { resolveSessionEventID } from "../../shared/event-session-id";
 
 interface ToolExecuteInput {
   tool: string;
@@ -24,6 +27,25 @@ interface EventInput {
     type: string;
     properties?: unknown;
   };
+}
+
+/**
+ * Only orchestrator agents should receive usage reminders.
+ * Subagents (explore, librarian, oracle, etc.) are the targets of delegation,
+ * so reminding them to delegate to themselves is counterproductive.
+ */
+const ORCHESTRATOR_AGENTS = new Set([
+  "sisyphus",
+  "sisyphus-junior",
+  "atlas",
+  "hephaestus",
+  "prometheus",
+]);
+
+const MAX_REMINDERS = 3;
+
+function isOrchestratorAgent(agentName: string): boolean {
+  return ORCHESTRATOR_AGENTS.has(getAgentConfigKey(agentName));
 }
 
 export function createAgentUsageReminderHook(_ctx: PluginInput) {
@@ -60,6 +82,12 @@ export function createAgentUsageReminderHook(_ctx: PluginInput) {
     output: ToolExecuteOutput,
   ) => {
     const { tool, sessionID } = input;
+
+    const agent = getSessionAgent(sessionID);
+    if (agent && !isOrchestratorAgent(agent)) {
+      return;
+    }
+
     const toolLower = tool.toLowerCase();
 
     if (AGENT_TOOLS.has(toolLower)) {
@@ -73,7 +101,7 @@ export function createAgentUsageReminderHook(_ctx: PluginInput) {
 
     const state = getOrCreateState(sessionID);
 
-    if (state.agentUsed) {
+    if (state.agentUsed || state.reminderCount >= MAX_REMINDERS) {
       return;
     }
 
@@ -87,15 +115,7 @@ export function createAgentUsageReminderHook(_ctx: PluginInput) {
     const props = event.properties as Record<string, unknown> | undefined;
 
     if (event.type === "session.deleted") {
-      const sessionInfo = props?.info as { id?: string } | undefined;
-      if (sessionInfo?.id) {
-        resetState(sessionInfo.id);
-      }
-    }
-
-    if (event.type === "session.compacted") {
-      const sessionID = (props?.sessionID ??
-        (props?.info as { id?: string } | undefined)?.id) as string | undefined;
+      const sessionID = resolveSessionEventID(props);
       if (sessionID) {
         resetState(sessionID);
       }

@@ -99,4 +99,115 @@ describe("transcript caching", () => {
 
     expect(client.session.messages).toHaveBeenCalledTimes(2)
   })
+
+  it("does not grow the cached baseEntries across sequential rebuilds (#3647)", async () => {
+    // given: an initial fetch returning one completed tool, so baseEntries
+    //        has length 1 after the first call's cache-miss path
+    const client = createMockClient([
+      {
+        info: { role: "assistant" },
+        parts: [
+          {
+            type: "tool",
+            tool: "bash",
+            state: { status: "completed", input: { command: "echo zero" } },
+          },
+        ],
+      },
+    ])
+
+    // when: three back-to-back PostToolUse rebuilds within the cache TTL.
+    // Snapshot each transcript's line count immediately, because
+    // buildTranscriptFromSession unlinks the previous temp file on the
+    // next call.
+    const countLines = (path: string | null): number => {
+      if (!path) return -1
+      return readFileSync(path, "utf-8").trim().split("\n").length
+    }
+
+    const firstPath = await buildTranscriptFromSession(
+      client,
+      "ses_no_growth",
+      "/tmp",
+      "bash",
+      { command: "echo first" }
+    )
+    const firstLines = countLines(firstPath)
+
+    const secondPath = await buildTranscriptFromSession(
+      client,
+      "ses_no_growth",
+      "/tmp",
+      "read",
+      { filePath: "/tmp/second.txt" }
+    )
+    const secondLines = countLines(secondPath)
+
+    const thirdPath = await buildTranscriptFromSession(
+      client,
+      "ses_no_growth",
+      "/tmp",
+      "write",
+      { filePath: "/tmp/third.txt", content: "third" }
+    )
+    const thirdContent = thirdPath ? readFileSync(thirdPath, "utf-8") : ""
+    const thirdLines = thirdContent ? thirdContent.trim().split("\n").length : -1
+
+    // then: session.messages() is fetched once and each transcript file is
+    //       exactly `baseEntries (1) + current synthetic entry (1)` lines.
+    //       Before #3647 was fixed the third file would have grown to 4
+    //       lines because the synthetic current entry was being written
+    //       back into the cached baseEntries on every call.
+    expect(client.session.messages).toHaveBeenCalledTimes(1)
+    expect(firstPath).not.toBeNull()
+    expect(secondPath).not.toBeNull()
+    expect(thirdPath).not.toBeNull()
+
+    expect(firstLines).toBe(2)
+    expect(secondLines).toBe(2)
+    expect(thirdLines).toBe(2)
+
+    // baseEntries contribution: the originally-fetched Bash entry
+    expect(thirdContent).toContain("Bash")
+    // current synthetic entry for this rebuild: Write
+    expect(thirdContent).toContain("Write")
+    // Read was a transient currentEntry from an earlier rebuild and must
+    // not leak into a later transcript file via the cached baseline
+    expect(thirdContent).not.toContain("Read")
+
+    deleteTempTranscript(thirdPath)
+  })
+
+  it("cleans up previous temp transcript files when rebuilding cached transcripts", async () => {
+    // given
+    const client = createMockClient([])
+
+    // when
+    const firstPath = await buildTranscriptFromSession(
+      client,
+      "ses_cleanup",
+      "/tmp",
+      "bash",
+      { command: "echo first" }
+    )
+    const secondPath = await buildTranscriptFromSession(
+      client,
+      "ses_cleanup",
+      "/tmp",
+      "read",
+      { filePath: "/tmp/second.txt" }
+    )
+
+    // then
+    expect(firstPath).not.toBeNull()
+    expect(secondPath).not.toBeNull()
+
+    if (firstPath && secondPath) {
+      expect(existsSync(firstPath)).toBe(false)
+      expect(existsSync(secondPath)).toBe(true)
+    }
+
+    deleteTempTranscript(firstPath)
+    deleteTempTranscript(secondPath)
+  })
 })

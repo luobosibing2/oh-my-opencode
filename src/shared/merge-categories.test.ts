@@ -44,7 +44,7 @@ describe("mergeCategories", () => {
   it("allows user to add custom categories", () => {
     //#given
     const userCategories = {
-      "my-custom": { model: "openai/gpt-5.2", description: "Custom category" },
+      "my-custom": { model: "openai/gpt-5.4", description: "Custom category" },
     }
 
     //#when
@@ -52,13 +52,13 @@ describe("mergeCategories", () => {
 
     //#then
     expect(result["my-custom"]).toBeDefined()
-    expect(result["my-custom"].model).toBe("openai/gpt-5.2")
+    expect(result["my-custom"].model).toBe("openai/gpt-5.4")
   })
 
   it("allows user to disable custom categories", () => {
     //#given
     const userCategories = {
-      "my-custom": { model: "openai/gpt-5.2", disable: true },
+      "my-custom": { model: "openai/gpt-5.4", disable: true },
     }
 
     //#when
@@ -71,7 +71,7 @@ describe("mergeCategories", () => {
   it("user overrides merge with defaults", () => {
     //#given
     const userCategories = {
-      "ultrabrain": { model: "anthropic/claude-opus-4-6" },
+      "ultrabrain": { model: "anthropic/claude-opus-4-7" },
     }
 
     //#when
@@ -79,6 +79,6 @@ describe("mergeCategories", () => {
 
     //#then
     expect(result["ultrabrain"]).toBeDefined()
-    expect(result["ultrabrain"].model).toBe("anthropic/claude-opus-4-6")
+    expect(result["ultrabrain"].model).toBe("anthropic/claude-opus-4-7")
   })
 })

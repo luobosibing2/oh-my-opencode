@@ -3,64 +3,37 @@ import type { AutoRetryHelpers } from "./auto-retry"
 import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
 import { extractStatusCode, extractErrorName, classifyErrorType, isRetryableError, extractAutoRetrySignal, containsErrorContent } from "./error-classifier"
-import { createFallbackState, prepareFallback } from "./fallback-state"
+import { createFallbackState } from "./fallback-state"
 import { getFallbackModelsForSession } from "./fallback-models"
+import { resolveFallbackBootstrapModel } from "./fallback-bootstrap-model"
+import { dispatchFallbackRetry } from "./fallback-retry-dispatcher"
+import { hasVisibleAssistantResponse } from "./visible-assistant-response"
+import { subagentSessions } from "../../features/claude-code-session-state"
+import { resolveMessageEventSessionID } from "../../shared/event-session-id"
 
-export function hasVisibleAssistantResponse(extractAutoRetrySignalFn: typeof extractAutoRetrySignal) {
-  return async (
-    ctx: HookDeps["ctx"],
-    sessionID: string,
-    _info: Record<string, unknown> | undefined,
-  ): Promise<boolean> => {
-    try {
-      const messagesResp = await ctx.client.session.messages({
-        path: { id: sessionID },
-        query: { directory: ctx.directory },
-      })
-
-      const msgs = (messagesResp as {
-        data?: Array<{
-          info?: Record<string, unknown>
-          parts?: Array<{ type?: string; text?: string }>
-        }>
-      }).data
-
-      if (!msgs || msgs.length === 0) return false
-
-      const lastAssistant = [...msgs].reverse().find((m) => m.info?.role === "assistant")
-      if (!lastAssistant) return false
-      if (lastAssistant.info?.error) return false
-
-      const parts = lastAssistant.parts ??
-        (lastAssistant.info?.parts as Array<{ type?: string; text?: string }> | undefined)
-
-      const textFromParts = (parts ?? [])
-        .filter((p) => p.type === "text" && typeof p.text === "string")
-        .map((p) => p.text!.trim())
-        .filter((text) => text.length > 0)
-        .join("\n")
-
-      if (!textFromParts) return false
-      if (extractAutoRetrySignalFn({ message: textFromParts })) return false
-
-      return true
-    } catch {
-      return false
-    }
-  }
-}
+export { hasVisibleAssistantResponse } from "./visible-assistant-response"
 
 export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
-  const { ctx, config, pluginConfig, sessionStates, sessionLastAccess, sessionRetryInFlight, sessionAwaitingFallbackResult } = deps
+  const { ctx, config, pluginConfig, sessionStates, sessionLastAccess, sessionRetryInFlight, sessionAwaitingFallbackResult, sessionStatusRetryKeys } = deps
   const checkVisibleResponse = hasVisibleAssistantResponse(extractAutoRetrySignal)
 
   return async (props: Record<string, unknown> | undefined) => {
     const info = props?.info as Record<string, unknown> | undefined
-    const sessionID = info?.sessionID as string | undefined
-    const retrySignalResult = extractAutoRetrySignal(info)
-    const retrySignal = retrySignalResult?.signal
+    const sessionID = resolveMessageEventSessionID(props)
     const timeoutEnabled = config.timeout_seconds > 0
-    const parts = props?.parts as Array<{ type?: string; text?: string }> | undefined
+    const eventParts = props?.parts as Array<{ type?: string; text?: string }> | undefined
+    const infoParts = info?.parts as Array<{ type?: string; text?: string }> | undefined
+    const parts = eventParts && eventParts.length > 0 ? eventParts : infoParts
+    const retrySignalResult = extractAutoRetrySignal(info)
+    const partsText = (parts ?? [])
+      .filter((p) => typeof p?.text === "string")
+      .map((p) => (p.text ?? "").trim())
+      .filter((text) => text.length > 0)
+      .join("\n")
+    const retrySignalFromParts = partsText
+      ? extractAutoRetrySignal({ message: partsText, status: partsText, summary: partsText })?.signal
+      : undefined
+    const retrySignal = retrySignalResult?.signal ?? retrySignalFromParts
     const errorContentResult = containsErrorContent(parts)
     const error = info?.error ?? 
       (retrySignal && timeoutEnabled ? { name: "ProviderRateLimitError", message: retrySignal } : undefined) ??
@@ -83,24 +56,44 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
       }
 
       sessionAwaitingFallbackResult.delete(sessionID)
+      sessionStatusRetryKeys.delete(sessionID)
       helpers.clearSessionFallbackTimeout(sessionID)
-      const state = sessionStates.get(sessionID)
+      let state = sessionStates.get(sessionID)
       if (state?.pendingFallbackModel) {
         state.pendingFallbackModel = undefined
+        state.pendingFallbackPromptMayHaveBeenAccepted = false
       }
       log(`[${HOOK_NAME}] Assistant response observed; cleared fallback timeout`, { sessionID, model })
       return
     }
 
     if (sessionID && role === "assistant" && error) {
-      sessionAwaitingFallbackResult.delete(sessionID)
+      let state = sessionStates.get(sessionID)
+      const pendingFallbackModel = state?.pendingFallbackModel
+      const wasAwaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
+      if (
+        wasAwaitingFallbackResult &&
+        pendingFallbackModel &&
+        !retrySignal &&
+        model !== pendingFallbackModel
+      ) {
+        log(`[${HOOK_NAME}] message.updated fallback skipped - awaiting fallback result`, {
+          sessionID,
+          pendingFallbackModel,
+          model,
+        })
+        return
+      }
+      if (wasAwaitingFallbackResult) {
+        sessionAwaitingFallbackResult.delete(sessionID)
+      }
       if (sessionRetryInFlight.has(sessionID) && !retrySignal) {
         log(`[${HOOK_NAME}] message.updated fallback skipped (retry in flight)`, { sessionID })
         return
       }
 
-      if (retrySignal && sessionRetryInFlight.has(sessionID) && timeoutEnabled) {
-        log(`[${HOOK_NAME}] Overriding in-flight retry due to provider auto-retry signal`, {
+      if (retrySignal && timeoutEnabled && (sessionRetryInFlight.has(sessionID) || wasAwaitingFallbackResult)) {
+        log(`[${HOOK_NAME}] Overriding active retry due to provider auto-retry signal`, {
           sessionID,
           model,
         })
@@ -134,32 +127,32 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
         return
       }
 
-      let state = sessionStates.get(sessionID)
       const agent = info?.agent as string | undefined
       const resolvedAgent = await helpers.resolveAgentForSessionFromContext(sessionID, agent)
       const fallbackModels = getFallbackModelsForSession(sessionID, resolvedAgent, pluginConfig)
 
       if (fallbackModels.length === 0) {
+        if (
+          subagentSessions.has(sessionID) &&
+          classifyErrorType(error) === "quota_exceeded"
+        ) {
+          log(`[${HOOK_NAME}] Aborting subagent on unrecoverable quota error (no fallback configured)`, {
+            sessionID,
+            model,
+          })
+          await helpers.abortSessionRequest(sessionID, "message.updated.subagent-quota-no-fallback")
+        }
         return
       }
 
       if (!state) {
-        let initialModel = model
-        if (!initialModel) {
-          const detectedAgent = resolvedAgent
-          const agentConfig = detectedAgent
-            ? pluginConfig?.agents?.[detectedAgent as keyof typeof pluginConfig.agents]
-            : undefined
-          const agentModel = agentConfig?.model as string | undefined
-          if (agentModel) {
-            log(`[${HOOK_NAME}] Derived model from agent config for message.updated`, {
-              sessionID,
-              agent: detectedAgent,
-              model: agentModel,
-            })
-            initialModel = agentModel
-          }
-        }
+        const initialModel = resolveFallbackBootstrapModel({
+          sessionID,
+          source: "message.updated",
+          eventModel: model,
+          resolvedAgent,
+          pluginConfig,
+        })
 
         if (!initialModel) {
           log(`[${HOOK_NAME}] message.updated missing model info, cannot fallback`, {
@@ -183,6 +176,7 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
               pendingFallbackModel: state.pendingFallbackModel,
             })
             state.pendingFallbackModel = undefined
+            state.pendingFallbackPromptMayHaveBeenAccepted = false
           } else {
           log(`[${HOOK_NAME}] message.updated fallback skipped (pending fallback in progress)`, {
             sessionID,
@@ -193,24 +187,13 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
         }
       }
 
-      const result = prepareFallback(sessionID, state, fallbackModels, config)
-
-      if (result.success && config.notify_on_fallback) {
-        await deps.ctx.client.tui
-          .showToast({
-            body: {
-              title: "Model Fallback",
-              message: `Switching to ${result.newModel?.split("/").pop() || result.newModel} for next request`,
-              variant: "warning",
-              duration: 5000,
-            },
-          })
-          .catch(() => {})
-      }
-
-      if (result.success && result.newModel) {
-        await helpers.autoRetryWithFallback(sessionID, result.newModel, resolvedAgent, "message.updated")
-      }
+      await dispatchFallbackRetry(deps, helpers, {
+        sessionID,
+        state,
+        fallbackModels,
+        resolvedAgent,
+        source: "message.updated",
+      })
     }
   }
 }

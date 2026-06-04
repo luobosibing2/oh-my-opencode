@@ -5,22 +5,27 @@
  * Category-spawned executor with domain-specific configurations.
  *
  * Routing:
- * 1. GPT models (openai/*, github-copilot/gpt-*) -> gpt.ts (GPT-5.2 optimized)
+ * 1. GPT models (openai/*, github-copilot/gpt-*) -> gpt.ts (GPT-5.4 optimized)
  * 2. Gemini models (google/*, google-vertex/*) -> gemini.ts (Gemini-optimized)
  * 3. Default (Claude, etc.) -> default.ts (Claude-optimized)
  */
 
 import type { AgentConfig } from "@opencode-ai/sdk"
 import type { AgentMode } from "../types"
-import { isGptModel, isGeminiModel } from "../types"
+import { isGlmModel, isGpt5_5Model, isGptModel, isGeminiModel, isKimiK2Model } from "../types"
 import type { AgentOverrideConfig } from "../../config/schema"
 import {
   createAgentToolRestrictions,
   type PermissionValue,
 } from "../../shared/permission-compat"
+import { getGptApplyPatchPermission } from "../gpt-apply-patch-guard"
 
 import { buildDefaultSisyphusJuniorPrompt } from "./default"
+import { buildKimiK26SisyphusJuniorPrompt } from "./kimi-k2-6"
 import { buildGptSisyphusJuniorPrompt } from "./gpt"
+import { buildGpt54SisyphusJuniorPrompt } from "./gpt-5-4"
+import { buildGpt55SisyphusJuniorPrompt } from "./gpt-5-5"
+import { buildGpt53CodexSisyphusJuniorPrompt } from "./gpt-5-3-codex"
 import { buildGeminiSisyphusJuniorPrompt } from "./gemini"
 
 const MODE: AgentMode = "subagent"
@@ -28,19 +33,29 @@ const MODE: AgentMode = "subagent"
 // Core tools that Sisyphus-Junior must NEVER have access to
 // Note: call_omo_agent is ALLOWED so subagents can spawn explore/librarian
 const BLOCKED_TOOLS = ["task"]
+const GPT_BLOCKED_TOOLS = ["task", "apply_patch"]
 
 export const SISYPHUS_JUNIOR_DEFAULTS = {
   model: "anthropic/claude-sonnet-4-6",
   temperature: 0.1,
 } as const
 
-export type SisyphusJuniorPromptSource = "default" | "gpt" | "gemini"
+export type SisyphusJuniorPromptSource =
+  | "default"
+  | "kimi-k2"
+  | "gpt"
+  | "gpt-5-5"
+  | "gpt-5-4"
+  | "gpt-5-3-codex"
+  | "gemini"
 
-/**
- * Determines which Sisyphus-Junior prompt to use based on model.
- */
 export function getSisyphusJuniorPromptSource(model?: string): SisyphusJuniorPromptSource {
+  if (model && isKimiK2Model(model)) return "kimi-k2"
   if (model && isGptModel(model)) {
+    if (isGpt5_5Model(model)) return "gpt-5-5"
+    const lower = model.toLowerCase()
+    if (lower.includes("gpt-5.4") || lower.includes("gpt-5-4")) return "gpt-5-4"
+    if (lower.includes("gpt-5.3-codex") || lower.includes("gpt-5-3-codex")) return "gpt-5-3-codex"
     return "gpt"
   }
   if (model && isGeminiModel(model)) {
@@ -60,6 +75,14 @@ export function buildSisyphusJuniorPrompt(
   const source = getSisyphusJuniorPromptSource(model)
 
   switch (source) {
+    case "kimi-k2":
+      return buildKimiK26SisyphusJuniorPrompt(useTaskSystem, promptAppend)
+    case "gpt-5-5":
+      return buildGpt55SisyphusJuniorPrompt(useTaskSystem, promptAppend)
+    case "gpt-5-4":
+      return buildGpt54SisyphusJuniorPrompt(useTaskSystem, promptAppend)
+    case "gpt-5-3-codex":
+      return buildGpt53CodexSisyphusJuniorPrompt(useTaskSystem, promptAppend)
     case "gpt":
       return buildGptSisyphusJuniorPrompt(useTaskSystem, promptAppend)
     case "gemini":
@@ -85,17 +108,22 @@ export function createSisyphusJuniorAgentWithOverrides(
 
   const promptAppend = override?.prompt_append
   const prompt = buildSisyphusJuniorPrompt(model, useTaskSystem, promptAppend)
+  const blockedTools = isGptModel(model) ? GPT_BLOCKED_TOOLS : BLOCKED_TOOLS
 
-  const baseRestrictions = createAgentToolRestrictions(BLOCKED_TOOLS)
+  const baseRestrictions = createAgentToolRestrictions(blockedTools)
 
   const userPermission = (override?.permission ?? {}) as Record<string, PermissionValue>
   const basePermission = baseRestrictions.permission
   const merged: Record<string, PermissionValue> = { ...userPermission }
-  for (const tool of BLOCKED_TOOLS) {
+  for (const tool of blockedTools) {
     merged[tool] = "deny"
   }
   merged.call_omo_agent = "allow"
-  const toolsConfig = { permission: { ...merged, ...basePermission } }
+  const toolsConfig = { permission: { ...merged, ...basePermission } as Record<string, PermissionValue> }
+  const permission: Record<string, PermissionValue> = {
+    ...toolsConfig.permission,
+    ...getGptApplyPatchPermission(model),
+  }
 
   const base: AgentConfig = {
     description: override?.description ??
@@ -106,7 +134,7 @@ export function createSisyphusJuniorAgentWithOverrides(
     maxTokens: 64000,
     prompt,
     color: override?.color ?? "#20B2AA",
-    ...toolsConfig,
+    permission,
   }
 
   if (override?.top_p !== undefined) {
@@ -115,6 +143,10 @@ export function createSisyphusJuniorAgentWithOverrides(
 
   if (isGptModel(model)) {
     return { ...base, reasoningEffort: "medium" } as AgentConfig
+  }
+
+  if (isGlmModel(model)) {
+    return base as AgentConfig
   }
 
   return {

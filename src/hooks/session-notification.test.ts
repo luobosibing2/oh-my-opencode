@@ -1,51 +1,150 @@
-import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test"
-
+/// <reference types="bun-types" />
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createSessionNotification } from "./session-notification"
 import { setMainSession, subagentSessions, _resetForTesting } from "../features/claude-code-session-state"
+import { setContinuationMarkerSource } from "../features/run-continuation-state"
 import * as utils from "./session-notification-utils"
+import * as sender from "./session-notification-sender"
+
+const originalSetTimeout = globalThis.setTimeout
+const originalClearTimeout = globalThis.clearTimeout
+const originalDateNow = Date.now
+
+type MockPluginInput = Parameters<typeof createSessionNotification>[0]
+
+type MockShellResult = {
+  stdout: Buffer
+  stderr: Buffer
+  exitCode: number
+}
+
+type MockShellChain = Promise<MockShellResult> & {
+  nothrow: () => MockShellChain
+  quiet: () => MockShellChain
+  text: () => Promise<string>
+}
+
+function formatShellCommand(cmd: TemplateStringsArray | string, values: readonly unknown[]): string {
+  if (typeof cmd === "string") return cmd
+  return cmd.reduce((acc, part, index) => `${acc}${part}${String(values[index] ?? "")}`, "")
+}
+
+function createShellChain(result: MockShellResult, shouldReject = false): MockShellChain {
+  const promise = (shouldReject ? Promise.reject(Object.assign(new Error("command failed"), result)) : Promise.resolve(result)) as MockShellChain
+  const resolvedNothrow = Promise.resolve(result) as MockShellChain
+
+  promise.quiet = () => promise
+  promise.text = async () => ""
+  promise.nothrow = () => resolvedNothrow
+
+  resolvedNothrow.quiet = () => resolvedNothrow
+  resolvedNothrow.text = async () => ""
+  resolvedNothrow.nothrow = () => resolvedNothrow
+
+  return promise
+}
+
+function createShellMock(options: {
+  capture?: (commandString: string) => void
+  reject?: (commandString: string, values: readonly unknown[]) => boolean
+} = {}) {
+  return (cmd: TemplateStringsArray | string, ...values: unknown[]): MockShellChain => {
+    const commandString = formatShellCommand(cmd, values)
+    options.capture?.(commandString)
+
+    return createShellChain(
+      { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: options.reject?.(commandString, values) ? 1 : 0 },
+      options.reject?.(commandString, values) ?? false
+    )
+  }
+}
+
+function createMockInput(shell: ReturnType<typeof createShellMock>, directory = "/tmp/test"): MockPluginInput {
+  const input = {} as MockPluginInput
+  return Object.assign(input, {
+    $: shell,
+    client: {
+      session: {
+        todo: async () => ({ data: [] }),
+      },
+    },
+    directory,
+    project: directory,
+    worktree: directory,
+    serverUrl: "http://localhost",
+  })
+}
 
 describe("session-notification", () => {
   let notificationCalls: string[]
+  const tempDirs: string[] = []
 
-  function createMockPluginInput() {
-    return {
-      $: async (cmd: TemplateStringsArray | string, ...values: any[]) => {
+  function createTempDir(): string {
+    const directory = mkdtempSync(join(tmpdir(), "omo-session-notification-"))
+    tempDirs.push(directory)
+    return directory
+  }
+
+  function createMockPluginInput(directory = "/tmp/test"): MockPluginInput {
+    return createMockInput(
+      createShellMock({
+        capture: (cmdStr) => {
         // given - track notification commands (osascript, notify-send, powershell)
-        const cmdStr = typeof cmd === "string" 
-          ? cmd 
-          : cmd.reduce((acc, part, i) => acc + part + (values[i] ?? ""), "")
-        
-        if (cmdStr.includes("osascript") || cmdStr.includes("notify-send") || cmdStr.includes("powershell")) {
-          notificationCalls.push(cmdStr)
+          if (cmdStr.includes("osascript") || cmdStr.includes("notify-send") || cmdStr.includes("powershell")) {
+            notificationCalls.push(cmdStr)
+          }
         }
-        return { stdout: "", stderr: "", exitCode: 0 }
-      },
-      client: {
-        session: {
-          todo: async () => ({ data: [] }),
-        },
-      },
-      directory: "/tmp/test",
-    } as any
+      }),
+      directory,
+    )
   }
 
   beforeEach(() => {
+    jest.useRealTimers()
+    globalThis.setTimeout = originalSetTimeout
+    globalThis.clearTimeout = originalClearTimeout
+    Date.now = originalDateNow
     _resetForTesting()
     notificationCalls = []
     
     spyOn(utils, "getOsascriptPath").mockResolvedValue("/usr/bin/osascript")
     spyOn(utils, "getNotifySendPath").mockResolvedValue("/usr/bin/notify-send")
     spyOn(utils, "getPowershellPath").mockResolvedValue("powershell")
+    spyOn(utils, "getCmuxPath").mockResolvedValue(null)
     spyOn(utils, "getAfplayPath").mockResolvedValue("/usr/bin/afplay")
     spyOn(utils, "getPaplayPath").mockResolvedValue("/usr/bin/paplay")
     spyOn(utils, "getAplayPath").mockResolvedValue("/usr/bin/aplay")
     spyOn(utils, "startBackgroundCheck").mockImplementation(() => {})
+    spyOn(sender, "detectPlatform").mockReturnValue("darwin")
+    spyOn(sender, "sendSessionNotification").mockImplementation(
+      async (
+        _ctx: Parameters<typeof sender.sendSessionNotification>[0],
+        _platform: Parameters<typeof sender.sendSessionNotification>[1],
+        _title: Parameters<typeof sender.sendSessionNotification>[2],
+        message: Parameters<typeof sender.sendSessionNotification>[3]
+      ) => {
+        notificationCalls.push(message)
+      }
+    )
   })
 
   afterEach(() => {
     // given - cleanup after each test
+    jest.useRealTimers()
+    globalThis.setTimeout = originalSetTimeout
+    globalThis.clearTimeout = originalClearTimeout
+    Date.now = originalDateNow
     subagentSessions.clear()
     _resetForTesting()
+    while (tempDirs.length > 0) {
+      const directory = tempDirs.pop()
+      if (directory) {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    }
   })
 
   test("should not trigger notification for subagent session", async () => {
@@ -105,6 +204,7 @@ describe("session-notification", () => {
     const hook = createSessionNotification(createMockPluginInput(), {
       idleConfirmationDelay: 10,
       skipIfIncompleteTodos: false,
+      enforceMainSessionFilter: false,
     })
 
     // when - main session goes idle
@@ -119,6 +219,58 @@ describe("session-notification", () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
 
     // then - notification should be sent
+    expect(notificationCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  test("should not trigger ready notification while background tasks are active", async () => {
+    // given - a main session has active background work marker
+    const mainSessionID = "main-bg-active"
+    const directory = createTempDir()
+    setMainSession(mainSessionID)
+    setContinuationMarkerSource(directory, mainSessionID, "background-task", "active", "1 background task active")
+
+    const hook = createSessionNotification(createMockPluginInput(directory), {
+      idleConfirmationDelay: 10,
+      enforceMainSessionFilter: false,
+    })
+
+    // when - main session goes idle before background work completes
+    await hook({
+      event: {
+        type: "session.idle",
+        properties: { sessionID: mainSessionID },
+      },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    // then - ready notification should not be sent
+    expect(notificationCalls).toHaveLength(0)
+  })
+
+  test("should trigger ready notification when background task marker is idle", async () => {
+    // given - a main session has no active background work marker
+    const mainSessionID = "main-bg-idle"
+    const directory = createTempDir()
+    setMainSession(mainSessionID)
+    setContinuationMarkerSource(directory, mainSessionID, "background-task", "idle")
+
+    const hook = createSessionNotification(createMockPluginInput(directory), {
+      idleConfirmationDelay: 10,
+      enforceMainSessionFilter: false,
+    })
+
+    // when - main session goes idle after background work completes
+    await hook({
+      event: {
+        type: "session.idle",
+        properties: { sessionID: mainSessionID },
+      },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    // then - ready notification should be sent
     expect(notificationCalls.length).toBeGreaterThanOrEqual(1)
   })
 
@@ -189,8 +341,9 @@ describe("session-notification", () => {
     setMainSession(mainSessionID)
 
     const hook = createSessionNotification(createMockPluginInput(), {
-      idleConfirmationDelay: 100, // Long delay
+      idleConfirmationDelay: 100,
       skipIfIncompleteTodos: false,
+      activityGracePeriodMs: 0,
     })
 
     // when - session goes idle
@@ -266,6 +419,7 @@ describe("session-notification", () => {
     const hook = createSessionNotification(createMockPluginInput(), {
       idleConfirmationDelay: 50,
       skipIfIncompleteTodos: false,
+      activityGracePeriodMs: 0,
     })
 
     // when - session goes idle, then message.updated fires
@@ -292,6 +446,47 @@ describe("session-notification", () => {
     expect(notificationCalls).toHaveLength(0)
   })
 
+  test("should mark session activity on message.part.updated event with part session id", async () => {
+    // given - main session is set
+    const mainSessionID = "main-part-activity"
+    setMainSession(mainSessionID)
+
+    const hook = createSessionNotification(createMockPluginInput(), {
+      idleConfirmationDelay: 50,
+      skipIfIncompleteTodos: false,
+      activityGracePeriodMs: 0,
+    })
+
+    // when - session goes idle, then streamed assistant activity fires
+    await hook({
+      event: {
+        type: "session.idle",
+        properties: { sessionID: mainSessionID },
+      },
+    })
+
+    await hook({
+      event: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "part-1",
+            messageID: "msg-1",
+            sessionID: mainSessionID,
+            type: "text",
+            text: "still working",
+          },
+        },
+      },
+    })
+
+    // Wait for idle delay to pass
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    // then - notification should NOT be sent (streaming activity cancelled it)
+    expect(notificationCalls).toHaveLength(0)
+  })
+
   test("should mark session activity on tool.execute.before event", async () => {
     // given - main session is set
     const mainSessionID = "main-tool"
@@ -300,6 +495,7 @@ describe("session-notification", () => {
     const hook = createSessionNotification(createMockPluginInput(), {
       idleConfirmationDelay: 50,
       skipIfIncompleteTodos: false,
+      activityGracePeriodMs: 0,
     })
 
     // when - session goes idle, then tool.execute.before fires
@@ -332,6 +528,7 @@ describe("session-notification", () => {
     const hook = createSessionNotification(createMockPluginInput(), {
       idleConfirmationDelay: 10,
       skipIfIncompleteTodos: false,
+      enforceMainSessionFilter: false,
     })
 
     // when - session goes idle twice
@@ -357,5 +554,210 @@ describe("session-notification", () => {
 
     // then - only one notification should be sent
     expect(notificationCalls).toHaveLength(1)
+  })
+
+  function createSenderMockCtx() {
+    const notifyCalls: string[] = []
+    const mockCtx = createMockInput(createShellMock({ capture: (commandString) => notifyCalls.push(commandString) }))
+    return { mockCtx, notifyCalls }
+  }
+
+  test("should use terminal-notifier with -activate when available on darwin", async () => {
+    // given - terminal-notifier is available and __CFBundleIdentifier is set
+    spyOn(sender, "sendSessionNotification").mockRestore()
+    const { mockCtx, notifyCalls } = createSenderMockCtx()
+    spyOn(utils, "getTerminalNotifierPath").mockResolvedValue("/usr/local/bin/terminal-notifier")
+    const originalEnv = process.env.__CFBundleIdentifier
+    process.env.__CFBundleIdentifier = "com.mitchellh.ghostty"
+
+    try {
+      // when - sendSessionNotification is called directly on darwin
+      await sender.sendSessionNotification(mockCtx, "darwin", "Test Title", "Test Message")
+
+      // then - notification uses terminal-notifier with -activate flag
+      expect(notifyCalls.length).toBeGreaterThanOrEqual(1)
+      const tnCall = notifyCalls.find(c => c.includes("terminal-notifier"))
+      expect(tnCall).toBeDefined()
+      expect(tnCall).toContain("-activate")
+      expect(tnCall).toContain("com.mitchellh.ghostty")
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env.__CFBundleIdentifier = originalEnv
+      } else {
+        delete process.env.__CFBundleIdentifier
+      }
+    }
+  })
+
+  test("should fall back to osascript when terminal-notifier is not available", async () => {
+    // given - terminal-notifier is NOT available
+    spyOn(sender, "sendSessionNotification").mockRestore()
+    const { mockCtx, notifyCalls } = createSenderMockCtx()
+    spyOn(utils, "getTerminalNotifierPath").mockResolvedValue(null)
+    spyOn(utils, "getOsascriptPath").mockResolvedValue("/usr/bin/osascript")
+
+    // when - sendSessionNotification is called directly on darwin
+    await sender.sendSessionNotification(mockCtx, "darwin", "Test Title", "Test Message")
+
+    // then - notification uses osascript (fallback)
+    expect(notifyCalls.length).toBeGreaterThanOrEqual(1)
+    const osascriptCall = notifyCalls.find(c => c.includes("osascript"))
+    expect(osascriptCall).toBeDefined()
+    const tnCall = notifyCalls.find(c => c.includes("terminal-notifier"))
+    expect(tnCall).toBeUndefined()
+  })
+
+  test("should fall back to osascript when terminal-notifier execution fails", async () => {
+    // given - terminal-notifier exists but invocation fails
+    spyOn(sender, "sendSessionNotification").mockRestore()
+    const notifyCalls: string[] = []
+    const mockCtx = createMockInput(
+      createShellMock({
+        capture: (commandString) => notifyCalls.push(commandString),
+        reject: (commandString) => commandString.includes("terminal-notifier"),
+      })
+    )
+    spyOn(utils, "getTerminalNotifierPath").mockResolvedValue("/usr/local/bin/terminal-notifier")
+    spyOn(utils, "getOsascriptPath").mockResolvedValue("/usr/bin/osascript")
+
+    // when - sendSessionNotification is called directly on darwin
+    await sender.sendSessionNotification(mockCtx, "darwin", "Test Title", "Test Message")
+
+    // then - osascript fallback should be attempted after terminal-notifier failure
+    const tnCall = notifyCalls.find(c => c.includes("terminal-notifier"))
+    const osascriptCall = notifyCalls.find(c => c.includes("osascript"))
+    expect(tnCall).toBeDefined()
+    expect(osascriptCall).toBeDefined()
+  })
+
+  test("should invoke terminal-notifier without array interpolation", async () => {
+    // given - shell interpolation rejects array values
+    spyOn(sender, "sendSessionNotification").mockRestore()
+    const notifyCalls: string[] = []
+    const mockCtx = createMockInput(
+      createShellMock({
+        capture: (commandString) => notifyCalls.push(commandString),
+        reject: (_commandString, values) => values.some(Array.isArray),
+      })
+    )
+    spyOn(utils, "getTerminalNotifierPath").mockResolvedValue("/usr/local/bin/terminal-notifier")
+    spyOn(utils, "getOsascriptPath").mockResolvedValue("/usr/bin/osascript")
+
+    // when - terminal-notifier command is executed
+    await sender.sendSessionNotification(mockCtx, "darwin", "Test Title", "Test Message")
+
+    // then - terminal-notifier succeeds directly and fallback is not used
+    const tnCall = notifyCalls.find(c => c.includes("terminal-notifier"))
+    const osascriptCall = notifyCalls.find(c => c.includes("osascript"))
+    expect(tnCall).toBeDefined()
+    expect(osascriptCall).toBeUndefined()
+  })
+
+  test("should use terminal-notifier without -activate when __CFBundleIdentifier is not set", async () => {
+    // given - terminal-notifier available but no bundle ID
+    spyOn(sender, "sendSessionNotification").mockRestore()
+    const { mockCtx, notifyCalls } = createSenderMockCtx()
+    spyOn(utils, "getTerminalNotifierPath").mockResolvedValue("/usr/local/bin/terminal-notifier")
+    const originalEnv = process.env.__CFBundleIdentifier
+    delete process.env.__CFBundleIdentifier
+
+    try {
+      // when - sendSessionNotification is called directly on darwin
+      await sender.sendSessionNotification(mockCtx, "darwin", "Test Title", "Test Message")
+
+      // then - terminal-notifier used but without -activate flag
+      expect(notifyCalls.length).toBeGreaterThanOrEqual(1)
+      const tnCall = notifyCalls.find(c => c.includes("terminal-notifier"))
+      expect(tnCall).toBeDefined()
+      expect(tnCall).not.toContain("-activate")
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env.__CFBundleIdentifier = originalEnv
+      }
+    }
+  })
+
+  test("should ignore activity events within grace period", async () => {
+    jest.useFakeTimers()
+    jest.setSystemTime(new Date("2026-01-01T00:00:00.000Z"))
+
+    try {
+      // given - a regular session notification is scheduled
+      const sessionID = "main-grace"
+
+      const hook = createSessionNotification(createMockPluginInput(), {
+        idleConfirmationDelay: 50,
+        skipIfIncompleteTodos: false,
+        activityGracePeriodMs: 100,
+        enforceMainSessionFilter: false,
+      })
+
+      // when - session goes idle
+      await hook({
+        event: {
+          type: "session.idle",
+          properties: { sessionID },
+        },
+      })
+
+      // when - activity happens immediately (within grace period)
+      await hook({
+        event: {
+          type: "tool.execute.before",
+          properties: { sessionID },
+        },
+      })
+
+      // when - idle confirmation delay passes deterministically
+      jest.advanceTimersByTime(50)
+      jest.runOnlyPendingTimers()
+      await Promise.resolve()
+
+      // then - notification SHOULD be sent (activity was within grace period, ignored)
+      expect(notificationCalls.length).toBeGreaterThanOrEqual(1)
+    } finally {
+      jest.clearAllTimers()
+      jest.useRealTimers()
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.clearTimeout = originalClearTimeout
+      Date.now = originalDateNow
+    }
+  })
+
+  test("should cancel notification for activity after grace period", async () => {
+    // given - a regular session notification is scheduled
+    const sessionID = "main-grace-cancel"
+
+    const hook = createSessionNotification(createMockPluginInput(), {
+      idleConfirmationDelay: 200,
+      skipIfIncompleteTodos: false,
+      activityGracePeriodMs: 50,
+      enforceMainSessionFilter: false,
+    })
+
+    // when - session goes idle
+    await hook({
+      event: {
+        type: "session.idle",
+        properties: { sessionID },
+      },
+    })
+
+    // when - wait for grace period to pass
+    await new Promise((resolve) => setTimeout(resolve, 60))
+
+    // when - activity happens after grace period
+    await hook({
+      event: {
+        type: "tool.execute.before",
+        properties: { sessionID },
+      },
+    })
+
+    // Wait for original delay to pass
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // then - notification should NOT be sent (activity cancelled it after grace period)
+    expect(notificationCalls).toHaveLength(0)
   })
 })

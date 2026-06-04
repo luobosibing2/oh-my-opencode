@@ -1,143 +1,104 @@
-import { log } from "../shared/logger"
 import type { OhMyOpenCodeConfig } from "../config"
+import { isCompactionAgent } from "../shared/compaction-marker"
+import { resolveMessageEventSessionID, resolveSessionEventID } from "../shared/event-session-id"
+import type { ContextLimitModelCacheState } from "../shared/context-limit-resolver"
 
-import { resolveCompactionModel } from "./shared/compaction-model-resolver"
-const DEFAULT_ACTUAL_LIMIT = 200_000
-
-type ModelCacheStateLike = {
-  anthropicContext1MEnabled: boolean
-}
-
-function getAnthropicActualLimit(modelCacheState?: ModelCacheStateLike): number {
-  return (modelCacheState?.anthropicContext1MEnabled ?? false) ||
-    process.env.ANTHROPIC_1M_CONTEXT === "true" ||
-    process.env.VERTEX_ANTHROPIC_1M_CONTEXT === "true"
-    ? 1_000_000
-    : DEFAULT_ACTUAL_LIMIT
-}
-
-const PREEMPTIVE_COMPACTION_THRESHOLD = 0.78
-
-interface TokenInfo {
-  input: number
-  output: number
-  reasoning: number
-  cache: { read: number; write: number }
-}
-
-interface CachedCompactionState {
-  providerID: string
-  modelID: string
-  tokens: TokenInfo
-}
-
-function isAnthropicProvider(providerID: string): boolean {
-  return providerID === "anthropic" || providerID === "google-vertex-anthropic"
-}
-
-type PluginInput = {
-  client: {
-    session: {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messages: (...args: any[]) => any
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      summarize: (...args: any[]) => any
-    }
-    tui: {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      showToast: (...args: any[]) => any
-    }
-  }
-  directory: string
-}
+import { createPostCompactionDegradationMonitor } from "./preemptive-compaction-degradation-monitor"
+import { runPreemptiveCompactionIfNeeded } from "./preemptive-compaction-trigger"
+import type {
+  CachedCompactionState,
+  PreemptiveCompactionContext,
+  TokenInfo,
+} from "./preemptive-compaction-types"
 
 export function createPreemptiveCompactionHook(
-  ctx: PluginInput,
+  ctx: PreemptiveCompactionContext,
   pluginConfig: OhMyOpenCodeConfig,
-  modelCacheState?: ModelCacheStateLike,
+  modelCacheState?: ContextLimitModelCacheState,
 ) {
   const compactionInProgress = new Set<string>()
   const compactedSessions = new Set<string>()
+  const lastCompactionTime = new Map<string, number>()
   const tokenCache = new Map<string, CachedCompactionState>()
+
+  const postCompactionMonitor = createPostCompactionDegradationMonitor({
+    client: ctx.client,
+    directory: ctx.directory,
+    pluginConfig,
+    tokenCache,
+    compactionInProgress,
+  })
 
   const toolExecuteAfter = async (
     input: { tool: string; sessionID: string; callID: string },
     _output: { title: string; output: string; metadata: unknown }
   ) => {
-    const { sessionID } = input
-    if (compactedSessions.has(sessionID) || compactionInProgress.has(sessionID)) return
-
-    const cached = tokenCache.get(sessionID)
-    if (!cached) return
-
-    const actualLimit =
-      isAnthropicProvider(cached.providerID)
-        ? getAnthropicActualLimit(modelCacheState)
-        : DEFAULT_ACTUAL_LIMIT
-
-    const lastTokens = cached.tokens
-    const totalInputTokens = (lastTokens?.input ?? 0) + (lastTokens?.cache?.read ?? 0)
-    const usageRatio = totalInputTokens / actualLimit
-
-    if (usageRatio < PREEMPTIVE_COMPACTION_THRESHOLD) return
-
-    const modelID = cached.modelID
-    if (!modelID) return
-
-    compactionInProgress.add(sessionID)
-
-    try {
-      const { providerID: targetProviderID, modelID: targetModelID } = resolveCompactionModel(
-        pluginConfig,
-        sessionID,
-        cached.providerID,
-        modelID
-      )
-
-      await ctx.client.session.summarize({
-        path: { id: sessionID },
-        body: { providerID: targetProviderID, modelID: targetModelID, auto: true } as never,
-        query: { directory: ctx.directory },
-      })
-
-      compactedSessions.add(sessionID)
-    } catch (error) {
-      log("[preemptive-compaction] Compaction failed", { sessionID, error: String(error) })
-    } finally {
-      compactionInProgress.delete(sessionID)
-    }
+    await runPreemptiveCompactionIfNeeded({
+      ctx,
+      pluginConfig,
+      modelCacheState,
+      sessionID: input.sessionID,
+      tokenCache,
+      compactionInProgress,
+      compactedSessions,
+      lastCompactionTime,
+    })
   }
 
   const eventHandler = async ({ event }: { event: { type: string; properties?: unknown } }) => {
     const props = event.properties as Record<string, unknown> | undefined
 
     if (event.type === "session.deleted") {
-      const sessionInfo = props?.info as { id?: string } | undefined
-      if (sessionInfo?.id) {
-        compactionInProgress.delete(sessionInfo.id)
-        compactedSessions.delete(sessionInfo.id)
-        tokenCache.delete(sessionInfo.id)
+      const sessionID = resolveSessionEventID(props)
+      if (sessionID) {
+        compactionInProgress.delete(sessionID)
+        compactedSessions.delete(sessionID)
+        lastCompactionTime.delete(sessionID)
+        tokenCache.delete(sessionID)
+        postCompactionMonitor.clear(sessionID)
+      }
+      return
+    }
+
+    if (event.type === "session.compacted") {
+      const sessionID = resolveSessionEventID(props)
+      if (sessionID) {
+        postCompactionMonitor.onSessionCompacted(sessionID)
       }
       return
     }
 
     if (event.type === "message.updated") {
       const info = props?.info as {
+        id?: string
+        agent?: unknown
         role?: string
         sessionID?: string
         providerID?: string
         modelID?: string
-        finish?: boolean
+        finish?: unknown
         tokens?: TokenInfo
+        parts?: unknown
       } | undefined
 
-      if (!info || info.role !== "assistant" || !info.finish) return
-      if (!info.sessionID || !info.providerID || !info.tokens) return
+      const sessionID = resolveMessageEventSessionID(props)
+      const finish = info?.finish
+      if (!info || info.role !== "assistant" || !finish || !sessionID) return
+      if (isCompactionAgent(info.agent)) return
 
-      tokenCache.set(info.sessionID, {
-        providerID: info.providerID,
-        modelID: info.modelID ?? "",
-        tokens: info.tokens,
+      if (info.providerID && info.tokens) {
+        tokenCache.set(sessionID, {
+          providerID: info.providerID,
+          modelID: info.modelID ?? "",
+          tokens: info.tokens,
+        })
+      }
+      compactedSessions.delete(sessionID)
+
+      await postCompactionMonitor.onAssistantMessageUpdated({
+        sessionID,
+        id: info.id,
+        parts: info.parts,
       })
     }
   }

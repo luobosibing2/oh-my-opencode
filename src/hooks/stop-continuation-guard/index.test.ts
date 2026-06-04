@@ -2,8 +2,16 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import type { PluginInput } from "@opencode-ai/plugin"
+import type { BackgroundManager, BackgroundTask } from "../../features/background-agent"
 import { readContinuationMarker } from "../../features/run-continuation-state"
 import { createStopContinuationGuardHook } from "./index"
+import { unsafeTestValue } from "../../../test-support/unsafe-test-value"
+
+type CancelCall = {
+  taskId: string
+  options?: Parameters<BackgroundManager["cancelTask"]>[1]
+}
 
 describe("stop-continuation-guard", () => {
   const tempDirs: string[] = []
@@ -24,14 +32,41 @@ describe("stop-continuation-guard", () => {
   })
 
   function createMockPluginInput() {
-    return {
+    return unsafeTestValue<PluginInput>({
       client: {
         tui: {
           showToast: async () => ({}),
         },
       },
       directory: createTempDir(),
-    } as any
+    })
+  }
+
+  function createBackgroundTask(status: BackgroundTask["status"], id: string): BackgroundTask {
+    return {
+      id,
+      status,
+      description: `${id} description`,
+      parentSessionId: "parent-session",
+      parentMessageId: "parent-message",
+      prompt: "prompt",
+      agent: "sisyphus-junior",
+    }
+  }
+
+  function createMockBackgroundManager(tasks: BackgroundTask[], cancelCalls: CancelCall[]): Pick<BackgroundManager, "getAllDescendantTasks" | "cancelTask"> {
+    return {
+      getAllDescendantTasks: () => tasks,
+      cancelTask: async (taskId: string, options?: Parameters<BackgroundManager["cancelTask"]>[1]) => {
+        cancelCalls.push({ taskId, options })
+        return true
+      },
+    }
+  }
+
+  async function flushMicrotasks(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
   }
 
   test("should mark session as stopped", () => {
@@ -129,7 +164,7 @@ describe("stop-continuation-guard", () => {
     expect(guard.isStopped(session2)).toBe(false)
   })
 
-  test("should clear stopped state on new user message (chat.message)", async () => {
+  test("should NOT clear stopped state on new user message (chat.message)", async () => {
     // given - a session that was stopped
     const guard = createStopContinuationGuardHook(createMockPluginInput())
     const sessionID = "test-session-4"
@@ -139,7 +174,38 @@ describe("stop-continuation-guard", () => {
     // when - user sends a new message
     await guard["chat.message"]({ sessionID })
 
-    // then - stop state should be cleared (one-time only)
+    // then - stop state should persist (not cleared by user messages)
+    // Stop is only cleared by explicit work-starting commands (/start-work, /ralph-loop, /ulw-loop)
+    // or session deletion. This prevents /stop-continuation from being ineffective.
+    expect(guard.isStopped(sessionID)).toBe(true)
+  })
+
+  test("should persist stop state across multiple user messages", async () => {
+    // given - a session that was stopped
+    const guard = createStopContinuationGuardHook(createMockPluginInput())
+    const sessionID = "test-session-persist"
+    guard.stop(sessionID)
+
+    // when - user sends multiple messages
+    await guard["chat.message"]({ sessionID })
+    await guard["chat.message"]({ sessionID })
+    await guard["chat.message"]({ sessionID })
+
+    // then - stop state remains active
+    expect(guard.isStopped(sessionID)).toBe(true)
+  })
+
+  test("should clear stop state only via explicit clear() call", () => {
+    // given - a session that was stopped
+    const guard = createStopContinuationGuardHook(createMockPluginInput())
+    const sessionID = "test-session-explicit-clear"
+    guard.stop(sessionID)
+    expect(guard.isStopped(sessionID)).toBe(true)
+
+    // when - clear is called (simulating /start-work or /ralph-loop)
+    guard.clear(sessionID)
+
+    // then - stop state is cleared
     expect(guard.isStopped(sessionID)).toBe(false)
   })
 
@@ -165,5 +231,32 @@ describe("stop-continuation-guard", () => {
 
     // then - should not throw and stopped session remains stopped
     expect(guard.isStopped("some-session")).toBe(true)
+  })
+
+  test("should cancel only running and pending background tasks on stop", async () => {
+    // given - a background manager with mixed task statuses
+    const cancelCalls: CancelCall[] = []
+    const backgroundManager = createMockBackgroundManager(
+      [
+        createBackgroundTask("running", "task-running"),
+        createBackgroundTask("pending", "task-pending"),
+        createBackgroundTask("completed", "task-completed"),
+      ],
+      cancelCalls,
+    )
+    const guard = createStopContinuationGuardHook(createMockPluginInput(), {
+      backgroundManager,
+    })
+
+    // when - stop continuation is triggered
+    guard.stop("test-session-bg")
+    await flushMicrotasks()
+
+    // then - only running and pending tasks are cancelled
+    expect(cancelCalls).toHaveLength(2)
+    expect(cancelCalls[0]?.taskId).toBe("task-running")
+    expect(cancelCalls[0]?.options?.abortSession).toBe(true)
+    expect(cancelCalls[1]?.taskId).toBe("task-pending")
+    expect(cancelCalls[1]?.options?.abortSession).toBe(false)
   })
 })

@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { randomBytes } from "node:crypto"
 import { join } from "node:path"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { MESSAGE_STORAGE, PART_STORAGE } from "./constants"
@@ -6,6 +7,7 @@ import type { MessageMeta, OriginalMessageContext, TextPart, ToolPermission } fr
 import { log } from "../../shared/logger"
 import { isSqliteBackend } from "../../shared/opencode-storage-detection"
 import { createInternalAgentTextPart, normalizeSDKResponse } from "../../shared"
+import { hasCompactionPartInStorage, isCompactionMessage } from "../../shared/compaction-marker"
 
 export interface StoredMessage {
   agent?: string
@@ -16,6 +18,7 @@ export interface StoredMessage {
 type OpencodeClient = PluginInput["client"]
 
 interface SDKMessage {
+  id?: string
   info?: {
     agent?: string
     model?: {
@@ -26,10 +29,22 @@ interface SDKMessage {
     providerID?: string
     modelID?: string
     tools?: Record<string, ToolPermission>
+    time?: {
+      created?: number
+    }
   }
+  parts?: Array<{ type?: string }>
 }
 
+const processPrefix = randomBytes(4).toString("hex")
+let messageCounter = 0
+let partCounter = 0
+
 function convertSDKMessageToStoredMessage(msg: SDKMessage): StoredMessage | null {
+  if (isCompactionMessage(msg)) {
+    return null
+  }
+
   const info = msg.info
   if (!info) return null
 
@@ -53,7 +68,7 @@ function convertSDKMessageToStoredMessage(msg: SDKMessage): StoredMessage | null
 // TODO: These SDK-based functions are exported for future use when hooks migrate to async.
 // Currently, callers still use the sync JSON-based functions which return null on beta.
 // Migration requires making callers async, which is a larger refactoring.
-// See: https://github.com/code-yeongyu/oh-my-opencode/pull/1837
+// See: https://github.com/code-yeongyu/oh-my-openagent/pull/1837
 
 /**
  * Finds the nearest message with required fields using SDK (for beta/SQLite backend).
@@ -66,16 +81,22 @@ export async function findNearestMessageWithFieldsFromSDK(
   try {
     const response = await client.session.messages({ path: { id: sessionID } })
     const messages = normalizeSDKResponse(response, [] as SDKMessage[], { preferResponseOnMissingData: true })
+      .map((message) => ({
+        stored: convertSDKMessageToStoredMessage(message),
+        createdAt: message.info?.time?.created ?? Number.NEGATIVE_INFINITY,
+        id: typeof message.id === "string" ? message.id : "",
+      }))
+      .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const stored = convertSDKMessageToStoredMessage(messages[i])
+    for (const message of messages) {
+      const stored = message.stored
       if (stored?.agent && stored.model?.providerID && stored.model?.modelID) {
         return stored
       }
     }
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const stored = convertSDKMessageToStoredMessage(messages[i])
+    for (const message of messages) {
+      const stored = message.stored
       if (stored?.agent || (stored?.model?.providerID && stored?.model?.modelID)) {
         return stored
       }
@@ -99,6 +120,14 @@ export async function findFirstMessageWithAgentFromSDK(
   try {
     const response = await client.session.messages({ path: { id: sessionID } })
     const messages = normalizeSDKResponse(response, [] as SDKMessage[], { preferResponseOnMissingData: true })
+      .sort((left, right) => {
+        const leftTime = left.info?.time?.created ?? Number.POSITIVE_INFINITY
+        const rightTime = right.info?.time?.created ?? Number.POSITIVE_INFINITY
+        if (leftTime !== rightTime) return leftTime - rightTime
+        const leftId = typeof left.id === "string" ? left.id : ""
+        const rightId = typeof right.id === "string" ? right.id : ""
+        return leftId.localeCompare(rightId)
+      })
 
     for (const msg of messages) {
       const stored = convertSDKMessageToStoredMessage(msg)
@@ -123,7 +152,7 @@ export async function findFirstMessageWithAgentFromSDK(
  * - On beta (SQLite backend): Returns null immediately (no JSON storage)
  * - On stable (JSON backend): Reads from JSON files in messageDir
  *
- * @deprecated Use findNearestMessageWithFieldsFromSDK for beta/SQLite backend
+ * Prefer findNearestMessageWithFieldsFromSDK when SDK access is available.
  */
 export function findNearestMessageWithFields(messageDir: string): StoredMessage | null {
   // On beta SQLite backend, skip JSON file reads entirely
@@ -132,32 +161,49 @@ export function findNearestMessageWithFields(messageDir: string): StoredMessage 
   }
 
   try {
-    const files = readdirSync(messageDir)
+    const messages = readdirSync(messageDir)
       .filter((f) => f.endsWith(".json"))
-      .sort()
-      .reverse()
-
-    for (const file of files) {
-      try {
-        const content = readFileSync(join(messageDir, file), "utf-8")
-        const msg = JSON.parse(content) as StoredMessage
-        if (msg.agent && msg.model?.providerID && msg.model?.modelID) {
-          return msg
+      .map((fileName) => {
+        try {
+          const content = readFileSync(join(messageDir, fileName), "utf-8")
+          const msg = JSON.parse(content) as StoredMessage & { time?: { created?: number } }
+          return {
+            fileName,
+            msg,
+            hasCompactionMarker: hasCompactionPartInStorage(
+              typeof (msg as { id?: unknown }).id === "string" ? (msg as { id?: string }).id : undefined,
+            ),
+            createdAt: typeof msg.time?.created === "number" ? msg.time.created : Number.NEGATIVE_INFINITY,
+          }
+        } catch {
+          return null
         }
-      } catch {
+      })
+      .filter((entry): entry is {
+        fileName: string
+        msg: StoredMessage & { time?: { created?: number } }
+        hasCompactionMarker: boolean
+        createdAt: number
+      } => entry !== null)
+      .sort((left, right) => right.createdAt - left.createdAt || right.fileName.localeCompare(left.fileName))
+
+    for (const entry of messages) {
+      if (entry.hasCompactionMarker || isCompactionMessage({ agent: entry.msg.agent })) {
         continue
+      }
+
+      if (entry.msg.agent && entry.msg.model?.providerID && entry.msg.model?.modelID) {
+        return entry.msg
       }
     }
 
-    for (const file of files) {
-      try {
-        const content = readFileSync(join(messageDir, file), "utf-8")
-        const msg = JSON.parse(content) as StoredMessage
-        if (msg.agent || (msg.model?.providerID && msg.model?.modelID)) {
-          return msg
-        }
-      } catch {
+    for (const entry of messages) {
+      if (entry.hasCompactionMarker || isCompactionMessage({ agent: entry.msg.agent })) {
         continue
+      }
+
+      if (entry.msg.agent || (entry.msg.model?.providerID && entry.msg.model?.modelID)) {
+        return entry.msg
       }
     }
   } catch {
@@ -174,7 +220,7 @@ export function findNearestMessageWithFields(messageDir: string): StoredMessage 
  * - On beta (SQLite backend): Returns null immediately (no JSON storage)
  * - On stable (JSON backend): Reads from JSON files in messageDir
  *
- * @deprecated Use findFirstMessageWithAgentFromSDK for beta/SQLite backend
+ * Prefer findFirstMessageWithAgentFromSDK when SDK access is available.
  */
 export function findFirstMessageWithAgent(messageDir: string): string | null {
   // On beta SQLite backend, skip JSON file reads entirely
@@ -183,19 +229,39 @@ export function findFirstMessageWithAgent(messageDir: string): string | null {
   }
 
   try {
-    const files = readdirSync(messageDir)
+    const messages = readdirSync(messageDir)
       .filter((f) => f.endsWith(".json"))
-      .sort()
-
-    for (const file of files) {
-      try {
-        const content = readFileSync(join(messageDir, file), "utf-8")
-        const msg = JSON.parse(content) as StoredMessage
-        if (msg.agent) {
-          return msg.agent
+      .map((fileName) => {
+        try {
+          const content = readFileSync(join(messageDir, fileName), "utf-8")
+          const msg = JSON.parse(content) as StoredMessage & { time?: { created?: number } }
+          return {
+            fileName,
+            msg,
+            hasCompactionMarker: hasCompactionPartInStorage(
+              typeof (msg as { id?: unknown }).id === "string" ? (msg as { id?: string }).id : undefined,
+            ),
+            createdAt: typeof msg.time?.created === "number" ? msg.time.created : Number.POSITIVE_INFINITY,
+          }
+        } catch {
+          return null
         }
-      } catch {
+      })
+      .filter((entry): entry is {
+        fileName: string
+        msg: StoredMessage & { time?: { created?: number } }
+        hasCompactionMarker: boolean
+        createdAt: number
+      } => entry !== null)
+      .sort((left, right) => left.createdAt - right.createdAt || left.fileName.localeCompare(right.fileName))
+
+    for (const entry of messages) {
+      if (entry.hasCompactionMarker || isCompactionMessage({ agent: entry.msg.agent })) {
         continue
+      }
+
+      if (entry.msg.agent) {
+        return entry.msg.agent
       }
     }
   } catch {
@@ -204,16 +270,12 @@ export function findFirstMessageWithAgent(messageDir: string): string | null {
   return null
 }
 
-function generateMessageId(): string {
-  const timestamp = Date.now().toString(16)
-  const random = Math.random().toString(36).substring(2, 14)
-  return `msg_${timestamp}${random}`
+export function generateMessageId(): string {
+  return `msg_${processPrefix}_${String(++messageCounter).padStart(6, "0")}`
 }
 
-function generatePartId(): string {
-  const timestamp = Date.now().toString(16)
-  const random = Math.random().toString(36).substring(2, 10)
-  return `prt_${timestamp}${random}`
+export function generatePartId(): string {
+  return `prt_${processPrefix}_${String(++partCounter).padStart(6, "0")}`
 }
 
 function getOrCreateMessageDir(sessionID: string): string {

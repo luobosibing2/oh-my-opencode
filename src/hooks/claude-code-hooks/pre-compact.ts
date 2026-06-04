@@ -3,9 +3,10 @@ import type {
   PreCompactOutput,
   ClaudeHooksConfig,
 } from "./types"
-import { findMatchingHooks, executeHookCommand, log } from "../../shared"
-import { DEFAULT_CONFIG } from "./plugin-config"
+import { findMatchingHooks, log } from "../../shared"
+import { dispatchHook, getHookIdentifier } from "./dispatch-hook"
 import { isHookCommandDisabled, type PluginExtendedConfig } from "./config-loader"
+import { normalizeHookText } from "./hook-text"
 
 export interface PreCompactContext {
   sessionId: string
@@ -20,6 +21,13 @@ export interface PreCompactResult {
   stopReason?: string
   suppressOutput?: boolean
   systemMessage?: string
+}
+
+function appendContext(context: string[], value: string): void {
+  const normalized = normalizeHookText(value)
+  if (normalized !== undefined) {
+    context.push(normalized)
+  }
 }
 
 export async function executePreCompactHooks(
@@ -50,22 +58,17 @@ export async function executePreCompactHooks(
    for (const matcher of matchers) {
      if (!matcher.hooks || matcher.hooks.length === 0) continue
      for (const hook of matcher.hooks) {
-       if (hook.type !== "command") continue
+       if (hook.type !== "command" && hook.type !== "http") continue
 
-       if (isHookCommandDisabled("PreCompact", hook.command, extendedConfig ?? null)) {
-        log("PreCompact hook command skipped (disabled by config)", { command: hook.command })
+      const hookName = getHookIdentifier(hook)
+      if (isHookCommandDisabled("PreCompact", hookName, extendedConfig ?? null)) {
+        log("PreCompact hook command skipped (disabled by config)", { command: hookName })
         continue
       }
 
-      const hookName = hook.command.split("/").pop() || hook.command
       if (!firstHookName) firstHookName = hookName
 
-      const result = await executeHookCommand(
-        hook.command,
-        JSON.stringify(stdinData),
-        ctx.cwd,
-        { forceZsh: DEFAULT_CONFIG.forceZsh, zshPath: DEFAULT_CONFIG.zshPath }
-      )
+      const result = await dispatchHook(hook, JSON.stringify(stdinData), ctx.cwd)
 
       if (result.exitCode === 2) {
         log("PreCompact hook blocked", { hookName, stderr: result.stderr })
@@ -77,9 +80,13 @@ export async function executePreCompactHooks(
           const output = JSON.parse(result.stdout || "{}") as PreCompactOutput
 
           if (output.hookSpecificOutput?.additionalContext) {
-            collectedContext.push(...output.hookSpecificOutput.additionalContext)
+            for (const context of output.hookSpecificOutput.additionalContext) {
+              appendContext(collectedContext, context)
+            }
           } else if (output.context) {
-            collectedContext.push(...output.context)
+            for (const context of output.context) {
+              appendContext(collectedContext, context)
+            }
           }
 
           if (output.continue === false) {
@@ -88,15 +95,13 @@ export async function executePreCompactHooks(
               elapsedMs: Date.now() - startTime,
               hookName: firstHookName,
               continue: output.continue,
-              stopReason: output.stopReason,
+              stopReason: normalizeHookText(output.stopReason),
               suppressOutput: output.suppressOutput,
-              systemMessage: output.systemMessage,
+              systemMessage: normalizeHookText(output.systemMessage),
             }
           }
         } catch {
-          if (result.stdout.trim()) {
-            collectedContext.push(result.stdout.trim())
-          }
+          appendContext(collectedContext, result.stdout)
         }
       }
     }

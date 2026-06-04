@@ -1,6 +1,9 @@
-import { describe, it, expect, beforeEach } from "bun:test"
+import { beforeEach, describe, expect, it } from "bun:test"
+import { unsafeTestValue } from "../../../test-support/unsafe-test-value"
+import { OMO_INTERNAL_INITIATOR_MARKER } from "../../shared/internal-initiator-marker"
 import { ContextCollector } from "./collector"
 import {
+  createContextInjectorHook,
   createContextInjectorMessagesTransformHook,
 } from "./injector"
 
@@ -14,7 +17,8 @@ describe("createContextInjectorMessagesTransformHook", () => {
   const createMockMessage = (
     role: "user" | "assistant",
     text: string,
-    sessionID: string
+    sessionID: string,
+    options?: { synthetic?: boolean }
   ) => ({
     info: {
       id: `msg_${Date.now()}_${Math.random()}`,
@@ -32,6 +36,7 @@ describe("createContextInjectorMessagesTransformHook", () => {
         messageID: `msg_${Date.now()}`,
         type: "text" as const,
         text,
+        ...(options?.synthetic === true ? { synthetic: true } : {}),
       },
     ],
   })
@@ -51,7 +56,7 @@ describe("createContextInjectorMessagesTransformHook", () => {
       createMockMessage("user", "Second message", sessionID),
     ]
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const output = { messages } as any
+    const output = unsafeTestValue({ messages })
 
     // when
     await hook["experimental.chat.messages.transform"]!({}, output)
@@ -64,13 +69,60 @@ describe("createContextInjectorMessagesTransformHook", () => {
     expect(output.messages[2].parts[1].text).toBe("Second message")
   })
 
+  it("uses deterministic synthetic part ID across repeated transforms", async () => {
+    // given
+    const hook = createContextInjectorMessagesTransformHook(collector)
+    const sessionID = "ses_transform_deterministic"
+    const baseMessage = createMockMessage("user", "Stable message", sessionID)
+
+    collector.register(sessionID, {
+      id: "ctx-1",
+      source: "keyword-detector",
+      content: "Injected context",
+    })
+    const firstOutput = {
+      messages: [structuredClone(baseMessage)],
+    }
+
+    // when
+    await hook["experimental.chat.messages.transform"]!({}, firstOutput)
+
+    // then
+    const firstSyntheticPart = firstOutput.messages[0].parts[0]
+    expect(
+      "synthetic" in firstSyntheticPart && firstSyntheticPart.synthetic === true
+    ).toBe(true)
+
+    // given
+    collector.register(sessionID, {
+      id: "ctx-2",
+      source: "keyword-detector",
+      content: "Injected context",
+    })
+    const secondOutput = {
+      messages: [structuredClone(baseMessage)],
+    }
+
+    // when
+    await hook["experimental.chat.messages.transform"]!({}, secondOutput)
+
+    // then
+    const secondSyntheticPart = secondOutput.messages[0].parts[0]
+    expect(
+      "synthetic" in secondSyntheticPart && secondSyntheticPart.synthetic === true
+    ).toBe(true)
+    expect(typeof secondSyntheticPart.id).toBe("string")
+    expect(secondSyntheticPart.id.startsWith("prt_")).toBe(true)
+    expect(secondSyntheticPart.id).toBe(firstSyntheticPart.id)
+  })
+
   it("does nothing when no pending context", async () => {
     // given
     const hook = createContextInjectorMessagesTransformHook(collector)
     const sessionID = "ses_transform2"
     const messages = [createMockMessage("user", "Hello world", sessionID)]
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const output = { messages } as any
+    const output = unsafeTestValue({ messages })
 
     // when
     await hook["experimental.chat.messages.transform"]!({}, output)
@@ -90,13 +142,87 @@ describe("createContextInjectorMessagesTransformHook", () => {
     })
     const messages = [createMockMessage("assistant", "Response", sessionID)]
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const output = { messages } as any
+    const output = unsafeTestValue({ messages })
 
     // when
     await hook["experimental.chat.messages.transform"]!({}, output)
 
     // then
     expect(output.messages.length).toBe(1)
+    expect(collector.hasPending(sessionID)).toBe(true)
+  })
+
+  it("does not consume pending context through chat.message when the only text part is synthetic", async () => {
+    // given
+    const hook = createContextInjectorHook(collector)
+    const sessionID = "ses_chat_message_synthetic"
+    collector.register(sessionID, {
+      id: "ctx",
+      source: "keyword-detector",
+      content: "Context",
+    })
+    const output = {
+      message: {},
+      parts: [{ type: "text", text: "Synthetic hook message", synthetic: true }],
+    }
+
+    // when
+    await hook["chat.message"]({ sessionID }, output)
+
+    // then
+    expect(output.parts[0]?.text).toBe("Synthetic hook message")
+    expect(collector.hasPending(sessionID)).toBe(true)
+  })
+
+  it("does not consume pending context when the latest user message is synthetic", async () => {
+    // given
+    const hook = createContextInjectorMessagesTransformHook(collector)
+    const sessionID = "ses_transform_synthetic_latest"
+    collector.register(sessionID, {
+      id: "ctx",
+      source: "keyword-detector",
+      content: "Context",
+    })
+    const messages = [
+      createMockMessage("user", "Real user message", sessionID),
+      createMockMessage("user", "Synthetic hook message", sessionID, { synthetic: true }),
+    ]
+    const originalMessages = structuredClone(messages)
+    const output = unsafeTestValue({ messages })
+
+    // when
+    await hook["experimental.chat.messages.transform"]!({}, output)
+
+    // then
+    expect(output.messages).toEqual(originalMessages)
+    expect(collector.hasPending(sessionID)).toBe(true)
+  })
+
+  it("does not consume pending context when the latest user message is internally marked", async () => {
+    // given
+    const hook = createContextInjectorMessagesTransformHook(collector)
+    const sessionID = "ses_transform_internal_latest"
+    collector.register(sessionID, {
+      id: "ctx",
+      source: "keyword-detector",
+      content: "Context",
+    })
+    const messages = [
+      createMockMessage("user", "Real user message", sessionID),
+      createMockMessage(
+        "user",
+        `Internal prompt\n${OMO_INTERNAL_INITIATOR_MARKER}`,
+        sessionID,
+      ),
+    ]
+    const originalMessages = structuredClone(messages)
+    const output = unsafeTestValue({ messages })
+
+    // when
+    await hook["experimental.chat.messages.transform"]!({}, output)
+
+    // then
+    expect(output.messages).toEqual(originalMessages)
     expect(collector.hasPending(sessionID)).toBe(true)
   })
 
@@ -111,7 +237,7 @@ describe("createContextInjectorMessagesTransformHook", () => {
     })
     const messages = [createMockMessage("user", "Message", sessionID)]
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const output = { messages } as any
+    const output = unsafeTestValue({ messages })
 
     // when
     await hook["experimental.chat.messages.transform"]!({}, output)

@@ -81,10 +81,12 @@ export function handleSessionStatus(ctx: RunContext, payload: EventPayload, stat
 
   if (props?.status?.type === "busy") {
     state.mainSessionIdle = false
+    state.mainSessionStarted = true
   } else if (props?.status?.type === "idle") {
     state.mainSessionIdle = true
   } else if (props?.status?.type === "retry") {
     state.mainSessionIdle = false
+    state.mainSessionStarted = true
   }
 }
 
@@ -103,7 +105,6 @@ export function handleMessagePartUpdated(ctx: RunContext, payload: EventPayload,
   if (payload.type !== "message.part.updated") return
 
   const props = payload.properties as MessagePartUpdatedProps | undefined
-  // Current OpenCode puts sessionID inside part; legacy puts it in info
   const partSid = getPartSessionId(props)
   const infoSid = getInfoSessionId(props)
   if ((partSid ?? infoSid) !== ctx.sessionID) return
@@ -129,6 +130,7 @@ export function handleMessagePartUpdated(ctx: RunContext, payload: EventPayload,
       const padded = writePaddedText(newText, state.thinkingAtLineStart)
       process.stdout.write(pc.dim(padded.output))
       state.thinkingAtLineStart = padded.atLineStart
+      state.mainSessionStarted = true
       state.hasReceivedMeaningfulWork = true
     }
     state.lastReasoningText = reasoningText
@@ -143,6 +145,7 @@ export function handleMessagePartUpdated(ctx: RunContext, payload: EventPayload,
       const padded = writePaddedText(newText, state.textAtLineStart)
       process.stdout.write(padded.output)
       state.textAtLineStart = padded.atLineStart
+      state.mainSessionStarted = true
       state.hasReceivedMeaningfulWork = true
     }
     state.lastPartText = part.text
@@ -156,6 +159,7 @@ export function handleMessagePartUpdated(ctx: RunContext, payload: EventPayload,
   }
 
   if (part.type === "tool") {
+    state.mainSessionStarted = true
     handleToolPart(ctx, part, state)
   }
 }
@@ -185,6 +189,7 @@ export function handleMessagePartDelta(ctx: RunContext, payload: EventPayload, s
     process.stdout.write(pc.dim(padded.output))
     state.thinkingAtLineStart = padded.atLineStart
     state.lastReasoningText += delta
+    state.mainSessionStarted = true
     state.hasReceivedMeaningfulWork = true
     return
   }
@@ -195,6 +200,7 @@ export function handleMessagePartDelta(ctx: RunContext, payload: EventPayload, s
   process.stdout.write(padded.output)
   state.textAtLineStart = padded.atLineStart
   state.lastPartText += delta
+  state.mainSessionStarted = true
   state.hasReceivedMeaningfulWork = true
 }
 
@@ -243,12 +249,16 @@ export function handleMessageUpdated(ctx: RunContext, payload: EventPayload, sta
   if (messageID && role) {
     state.messageRoleById[messageID] = role
   }
+  if (messageID) {
+    state.mainSessionStarted = true
+  }
 
   if (props?.info?.role !== "assistant") return
 
   const isNewMessage = !messageID || messageID !== state.currentMessageId
   if (isNewMessage) {
     state.currentMessageId = messageID
+    state.mainSessionStarted = true
     state.hasReceivedMeaningfulWork = true
     state.messageCount++
     state.lastPartText = ""
@@ -287,6 +297,7 @@ export function handleToolExecute(ctx: RunContext, payload: EventPayload, state:
 
   const toolName = props?.name || "unknown"
   state.currentTool = toolName
+  state.mainSessionStarted = true
   const header = formatToolHeader(toolName, props?.input ?? {})
   const suffix = header.description ? ` ${pc.dim(header.description)}` : ""
 

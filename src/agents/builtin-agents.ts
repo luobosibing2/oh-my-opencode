@@ -12,6 +12,7 @@ import { createMetisAgent, metisPromptMetadata } from "./metis"
 import { createAtlasAgent, atlasPromptMetadata } from "./atlas"
 import { createMomusAgent, momusPromptMetadata } from "./momus"
 import { createHephaestusAgent } from "./hephaestus"
+import { createSisyphusJuniorAgentWithOverrides } from "./sisyphus-junior"
 import type { AvailableCategory } from "./dynamic-agent-prompt-builder"
 import {
   fetchAvailableModels,
@@ -25,7 +26,6 @@ import { collectPendingBuiltinAgents } from "./builtin-agents/general-agents"
 import { maybeCreateSisyphusConfig } from "./builtin-agents/sisyphus-agent"
 import { maybeCreateHephaestusConfig } from "./builtin-agents/hephaestus-agent"
 import { maybeCreateAtlasConfig } from "./builtin-agents/atlas-agent"
-import { buildCustomAgentMetadata, parseRegisteredAgentSummaries } from "./custom-agent-summaries"
 
 type AgentSource = AgentFactory | AgentConfig
 
@@ -41,6 +41,7 @@ const agentSources: Record<BuiltinAgentName, AgentSource> = {
   // Note: Atlas is handled specially in createBuiltinAgents()
   // because it needs OrchestratorContext, not just a model string
   atlas: createAtlasAgent as AgentFactory,
+  "sisyphus-junior": createSisyphusJuniorAgentWithOverrides as AgentFactory,
 }
 
 /**
@@ -65,12 +66,13 @@ export async function createBuiltinAgents(
   categories?: CategoriesConfig,
   gitMasterConfig?: GitMasterConfig,
   discoveredSkills: LoadedSkill[] = [],
-  customAgentSummaries?: unknown,
+  _customAgentSummaries?: unknown,
   browserProvider?: BrowserAutomationProvider,
   uiSelectedModel?: string,
   disabledSkills?: Set<string>,
   useTaskSystem = false,
-  disableOmoEnv = false
+  disableOmoEnv = false,
+  teamModeEnabled = false,
 ): Promise<Record<string, AgentConfig>> {
 
   const connectedProviders = readConnectedProvidersCache()
@@ -82,7 +84,7 @@ export async function createBuiltinAgents(
   )
   // IMPORTANT: Do NOT call OpenCode client APIs during plugin initialization.
   // This function is called from config handler, and calling client API causes deadlock.
-  // See: https://github.com/code-yeongyu/oh-my-opencode/issues/1301
+  // See: https://github.com/code-yeongyu/oh-my-openagent/issues/1301
   const availableModels = await fetchAvailableModels(undefined, {
     connectedProviders: mergedConnectedProviders.length > 0 ? mergedConnectedProviders : undefined,
   })
@@ -98,8 +100,6 @@ export async function createBuiltinAgents(
     description: categories?.[name]?.description ?? CATEGORY_DESCRIPTIONS[name] ?? "General tasks",
   }))
 
-  const availableSkills = buildAvailableSkills(discoveredSkills, browserProvider, disabledSkills)
-
   // Collect general agents first (for availableAgents), but don't add to result yet
   const { pendingAgentConfigs, availableAgents } = collectPendingBuiltinAgents({
     agentSources,
@@ -113,26 +113,11 @@ export async function createBuiltinAgents(
     browserProvider,
     uiSelectedModel,
     availableModels,
+    isFirstRunNoCache,
     disabledSkills,
+    teamModeEnabled,
     disableOmoEnv,
   })
-
-  const registeredAgents = parseRegisteredAgentSummaries(customAgentSummaries)
-  const builtinAgentNames = new Set(Object.keys(agentSources).map((name) => name.toLowerCase()))
-  const disabledAgentNames = new Set(disabledAgents.map((name) => name.toLowerCase()))
-
-  for (const agent of registeredAgents) {
-    const lowerName = agent.name.toLowerCase()
-    if (builtinAgentNames.has(lowerName)) continue
-    if (disabledAgentNames.has(lowerName)) continue
-    if (availableAgents.some((availableAgent) => availableAgent.name.toLowerCase() === lowerName)) continue
-
-    availableAgents.push({
-      name: agent.name,
-      description: agent.description,
-      metadata: buildCustomAgentMetadata(agent.name, agent.description),
-    })
-  }
 
   const sisyphusConfig = maybeCreateSisyphusConfig({
     disabledAgents,
@@ -142,7 +127,7 @@ export async function createBuiltinAgents(
     systemDefaultModel,
     isFirstRunNoCache,
     availableAgents,
-    availableSkills,
+    availableSkills: buildAvailableSkills(discoveredSkills, browserProvider, disabledSkills, teamModeEnabled, "sisyphus"),
     availableCategories,
     mergedCategories,
     directory,
@@ -161,7 +146,7 @@ export async function createBuiltinAgents(
     systemDefaultModel,
     isFirstRunNoCache,
     availableAgents,
-    availableSkills,
+    availableSkills: buildAvailableSkills(discoveredSkills, browserProvider, disabledSkills, teamModeEnabled, "hephaestus"),
     availableCategories,
     mergedCategories,
     directory,
@@ -184,7 +169,7 @@ export async function createBuiltinAgents(
     availableModels,
     systemDefaultModel,
     availableAgents,
-    availableSkills,
+    availableSkills: buildAvailableSkills(discoveredSkills, browserProvider, disabledSkills, teamModeEnabled, "atlas"),
     mergedCategories,
     directory,
     userCategories: categories,

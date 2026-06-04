@@ -1,31 +1,16 @@
 import { existsSync, readdirSync, readFileSync } from "fs"
 import { basename, join } from "path"
-import type { AgentConfig } from "@opencode-ai/sdk"
 import { parseFrontmatter } from "../../shared/frontmatter"
 import { isMarkdownFile } from "../../shared/file-utils"
 import { log } from "../../shared/logger"
-import type { AgentFrontmatter } from "../claude-code-agent-loader/types"
+import { parseToolsConfig } from "../../shared/parse-tools-config"
+import { resolvePluginPath } from "./plugin-path-resolver"
+import type { AgentFrontmatter, ClaudeCodeAgentConfig } from "../claude-code-agent-loader/types"
+import { mapClaudeModelToOpenCode } from "../claude-code-agent-loader/claude-model-mapper"
 import type { LoadedPlugin } from "./types"
 
-function parseToolsConfig(toolsStr?: string): Record<string, boolean> | undefined {
-  if (!toolsStr) return undefined
-
-  const tools = toolsStr
-    .split(",")
-    .map((tool) => tool.trim())
-    .filter(Boolean)
-
-  if (tools.length === 0) return undefined
-
-  const result: Record<string, boolean> = {}
-  for (const tool of tools) {
-    result[tool.toLowerCase()] = true
-  }
-  return result
-}
-
-export function loadPluginAgents(plugins: LoadedPlugin[]): Record<string, AgentConfig> {
-  const agents: Record<string, AgentConfig> = {}
+export function loadPluginAgents(plugins: LoadedPlugin[]): Record<string, ClaudeCodeAgentConfig> {
+  const agents: Record<string, ClaudeCodeAgentConfig> = {}
 
   for (const plugin of plugins) {
     if (!plugin.agentsDir || !existsSync(plugin.agentsDir)) continue
@@ -46,10 +31,16 @@ export function loadPluginAgents(plugins: LoadedPlugin[]): Record<string, AgentC
         const originalDescription = data.description || ""
         const formattedDescription = `(plugin: ${plugin.name}) ${originalDescription}`
 
-        const config: AgentConfig = {
+        const mappedModelOverride = mapClaudeModelToOpenCode(data.model)
+        const modelString = mappedModelOverride
+          ? `${mappedModelOverride.providerID}/${mappedModelOverride.modelID}`
+          : undefined
+
+        const config: ClaudeCodeAgentConfig = {
           description: formattedDescription,
           mode: "subagent",
-          prompt: body.trim(),
+          prompt: resolvePluginPath(body.trim(), plugin.installPath),
+          ...(modelString ? { model: modelString } : {}),
         }
 
         const toolsConfig = parseToolsConfig(data.tools)

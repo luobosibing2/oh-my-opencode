@@ -1,13 +1,22 @@
 import type { createOpencodeClient } from "@opencode-ai/sdk"
+import { parseModelSuggestion as parseModelSuggestionFromCore } from "@oh-my-opencode/model-core"
 import { log } from "./logger"
+import {
+  createPromptTimeoutContext,
+  PROMPT_TIMEOUT_MS,
+  type PromptRetryOptions,
+} from "./prompt-timeout-context"
+import {
+  dispatchInternalPrompt,
+  isInternalPromptDispatchAccepted,
+  releasePromptAsyncReservation,
+} from "./prompt-async-gate"
+import { isAmbiguousPostDispatchPromptFailure } from "./prompt-failure-classifier"
 
 type Client = ReturnType<typeof createOpencodeClient>
 
-export interface ModelSuggestionInfo {
-  providerID: string
-  modelID: string
-  suggestion: string
-}
+export type { ModelSuggestionInfo } from "@oh-my-opencode/model-core"
+export { parseModelSuggestionFromCore as parseModelSuggestion }
 
 function extractMessage(error: unknown): string {
   if (typeof error === "string") return error
@@ -24,49 +33,13 @@ function extractMessage(error: unknown): string {
   return String(error)
 }
 
-export function parseModelSuggestion(error: unknown): ModelSuggestionInfo | null {
-  if (!error) return null
-
-  if (typeof error === "object") {
-    const errObj = error as Record<string, unknown>
-
-    if (errObj.name === "ProviderModelNotFoundError" && typeof errObj.data === "object" && errObj.data !== null) {
-      const data = errObj.data as Record<string, unknown>
-      const suggestions = data.suggestions
-      if (Array.isArray(suggestions) && suggestions.length > 0 && typeof suggestions[0] === "string") {
-        return {
-          providerID: String(data.providerID ?? ""),
-          modelID: String(data.modelID ?? ""),
-          suggestion: suggestions[0],
-        }
-      }
-      return null
-    }
-
-    for (const key of ["data", "error", "cause"] as const) {
-      const nested = errObj[key]
-      if (nested && typeof nested === "object") {
-        const result = parseModelSuggestion(nested)
-        if (result) return result
-      }
-    }
-  }
-
+function isAgentResolutionError(error: unknown): boolean {
   const message = extractMessage(error)
-  if (!message) return null
+  return message.includes("Agent not found") || message.includes("agent.name")
+}
 
-  const modelMatch = message.match(/model not found:\s*([^/\s]+)\s*\/\s*([^.\s]+)/i)
-  const suggestionMatch = message.match(/did you mean:\s*([^,?]+)/i)
-
-  if (modelMatch && suggestionMatch) {
-    return {
-      providerID: modelMatch[1].trim(),
-      modelID: modelMatch[2].trim(),
-      suggestion: suggestionMatch[1].trim(),
-    }
-  }
-
-  return null
+function shouldReleaseReservationAfterFailedAsyncPrompt(error: unknown): boolean {
+  return parseModelSuggestionFromCore(error) !== null || isAgentResolutionError(error)
 }
 
 interface PromptBody {
@@ -77,60 +50,125 @@ interface PromptBody {
 interface PromptArgs {
   path: { id: string }
   body: PromptBody
+  signal?: AbortSignal
   [key: string]: unknown
 }
 
 export async function promptWithModelSuggestionRetry(
   client: Client,
   args: PromptArgs,
+  options: PromptRetryOptions = {},
 ): Promise<void> {
-  // NOTE: Model suggestion retry removed — promptAsync returns 204 immediately,
-  // model errors happen asynchronously server-side and cannot be caught here
-  const promptPromise = client.session.promptAsync(
-    args as Parameters<typeof client.session.promptAsync>[0],
-  )
-
-  let timeoutID: ReturnType<typeof setTimeout> | null = null
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutID = setTimeout(() => {
-      reject(new Error("promptAsync timed out after 120000ms"))
-    }, 120000)
-  })
+  const timeoutMs = options.timeoutMs ?? PROMPT_TIMEOUT_MS
+  const timeoutContext = createPromptTimeoutContext(args, timeoutMs)
 
   try {
-    await Promise.race([promptPromise, timeoutPromise])
+    const promptResult = await dispatchInternalPrompt({
+      mode: "async",
+      client,
+      sessionID: args.path.id,
+      input: {
+        ...args,
+        signal: timeoutContext.signal,
+      } as Parameters<typeof client.session.promptAsync>[0],
+      source: "model-suggestion-retry",
+      settleMs: 0,
+      ...(options.queueBehavior ? { queueBehavior: options.queueBehavior } : {}),
+      ...(options.checkStatus !== undefined ? { checkStatus: options.checkStatus } : {}),
+      ...(options.checkToolState !== undefined ? { checkToolState: options.checkToolState } : {}),
+    })
+    if (promptResult.status === "failed") {
+      if (timeoutContext.wasTimedOut()) {
+        throw new Error(`promptAsync timed out after ${timeoutMs}ms`)
+      }
+      if (isAmbiguousPostDispatchPromptFailure(promptResult)) {
+        return
+      }
+      throw promptResult.error
+    }
+    if (!isInternalPromptDispatchAccepted(promptResult)) {
+      throw new Error(`promptAsync skipped by gate: ${promptResult.status}`)
+    }
+    if (timeoutContext.wasTimedOut()) {
+      throw new Error(`promptAsync timed out after ${timeoutMs}ms`)
+    }
+  } catch (error) {
+    if (timeoutContext.wasTimedOut()) {
+      throw new Error(`promptAsync timed out after ${timeoutMs}ms`)
+    }
+    if (shouldReleaseReservationAfterFailedAsyncPrompt(error)) {
+      releasePromptAsyncReservation(args.path.id, "model-suggestion-retry")
+    }
+    throw error
   } finally {
-    if (timeoutID !== null) clearTimeout(timeoutID)
+    timeoutContext.cleanup()
   }
 }
 
-/**
- * Synchronous variant of promptWithModelSuggestionRetry.
- *
- * Uses `session.prompt` (blocking HTTP call that waits for the LLM response)
- * instead of `promptAsync` (fire-and-forget HTTP 204).
- *
- * Required by callers that need the response to be available immediately after
- * the call returns — e.g. look_at, which reads session messages right away.
- */
 export async function promptSyncWithModelSuggestionRetry(
   client: Client,
   args: PromptArgs,
+  options: PromptRetryOptions = {},
 ): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? PROMPT_TIMEOUT_MS
+
   try {
-    await client.session.prompt(args as Parameters<typeof client.session.prompt>[0])
+    const timeoutContext = createPromptTimeoutContext(args, timeoutMs)
+    try {
+      const promptResult = await dispatchInternalPrompt({
+        mode: "sync",
+        client,
+        sessionID: args.path.id,
+        input: {
+          ...args,
+          signal: timeoutContext.signal,
+        } as Parameters<typeof client.session.prompt>[0],
+        source: "model-suggestion-retry:sync",
+        settleMs: 0,
+        checkStatus: false,
+        checkToolState: false,
+        ...(options.queueBehavior ? { queueBehavior: options.queueBehavior } : {}),
+      })
+      if (promptResult.status === "failed") {
+        if (timeoutContext.wasTimedOut()) {
+          throw new Error(`prompt timed out after ${timeoutMs}ms`)
+        }
+        if (isAmbiguousPostDispatchPromptFailure(promptResult)) {
+          return
+        }
+        throw promptResult.error
+      }
+      if (!isInternalPromptDispatchAccepted(promptResult)) {
+        throw new Error(`prompt skipped by gate: ${promptResult.status}`)
+      }
+      if (timeoutContext.wasTimedOut()) {
+        throw new Error(`prompt timed out after ${timeoutMs}ms`)
+      }
+    } catch (error) {
+      if (timeoutContext.wasTimedOut()) {
+        throw new Error(`prompt timed out after ${timeoutMs}ms`)
+      }
+      throw error
+    } finally {
+      timeoutContext.cleanup()
+    }
   } catch (error) {
-    const suggestion = parseModelSuggestion(error)
+    const suggestion = parseModelSuggestionFromCore(error)
     if (!suggestion || !args.body.model) {
       throw error
     }
+
+    // The first attempt failed synchronously with ProviderModelNotFoundError, which means the
+    // prompt did not reach the server. Release the post-dispatch reservation hold so the
+    // immediate retry can dispatch without waiting for the hold window to expire.
+    releasePromptAsyncReservation(args.path.id, "model-suggestion-retry:sync")
 
     log("[model-suggestion-retry] Model not found, retrying with suggestion", {
       original: `${suggestion.providerID}/${suggestion.modelID}`,
       suggested: suggestion.suggestion,
     })
 
-    await client.session.prompt({
+    const retryArgs: PromptArgs = {
       ...args,
       body: {
         ...args.body,
@@ -139,6 +177,46 @@ export async function promptSyncWithModelSuggestionRetry(
           modelID: suggestion.suggestion,
         },
       },
-    } as Parameters<typeof client.session.prompt>[0])
+    }
+
+    const timeoutContext = createPromptTimeoutContext(retryArgs, timeoutMs)
+    try {
+      const promptResult = await dispatchInternalPrompt({
+        mode: "sync",
+        client,
+        sessionID: retryArgs.path.id,
+        input: {
+          ...retryArgs,
+          signal: timeoutContext.signal,
+        } as Parameters<typeof client.session.prompt>[0],
+        source: "model-suggestion-retry:sync-retry",
+        settleMs: 0,
+        checkStatus: false,
+        checkToolState: false,
+        ...(options.queueBehavior ? { queueBehavior: options.queueBehavior } : {}),
+      })
+      if (promptResult.status === "failed") {
+        if (timeoutContext.wasTimedOut()) {
+          throw new Error(`prompt timed out after ${timeoutMs}ms`)
+        }
+        if (isAmbiguousPostDispatchPromptFailure(promptResult)) {
+          return
+        }
+        throw promptResult.error
+      }
+      if (!isInternalPromptDispatchAccepted(promptResult)) {
+        throw new Error(`prompt skipped by gate: ${promptResult.status}`)
+      }
+      if (timeoutContext.wasTimedOut()) {
+        throw new Error(`prompt timed out after ${timeoutMs}ms`)
+      }
+    } catch (retryError) {
+      if (timeoutContext.wasTimedOut()) {
+        throw new Error(`prompt timed out after ${timeoutMs}ms`)
+      }
+      throw retryError
+    } finally {
+      timeoutContext.cleanup()
+    }
   }
 }

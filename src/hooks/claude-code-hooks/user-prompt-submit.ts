@@ -3,9 +3,11 @@ import type {
   PostToolUseOutput,
   ClaudeHooksConfig,
 } from "./types"
-import { findMatchingHooks, executeHookCommand, log } from "../../shared"
-import { DEFAULT_CONFIG } from "./plugin-config"
+import { findMatchingHooks, log } from "../../shared"
+import { isRealUserTextPart } from "../../shared/internal-initiator-marker"
+import { dispatchHook, getHookIdentifier } from "./dispatch-hook"
 import { isHookCommandDisabled, type PluginExtendedConfig } from "./config-loader"
+import { normalizeHookText } from "./hook-text"
 
 const USER_PROMPT_SUBMIT_TAG_OPEN = "<user-prompt-submit-hook>"
 const USER_PROMPT_SUBMIT_TAG_CLOSE = "</user-prompt-submit-hook>"
@@ -44,10 +46,14 @@ export async function executeUserPromptSubmitHooks(
     return { block: false, modifiedParts, messages }
   }
 
+  const realUserTextParts = ctx.parts.filter(isRealUserTextPart)
+  if (realUserTextParts.length === 0) {
+    return { block: false, modifiedParts, messages }
+  }
+
   // Check if hook tags are in the current user input only (not in injected context)
   // by checking only the text parts that were provided in this message
-  const userInputText = ctx.parts
-    .filter((p) => p.type === "text" && p.text)
+  const userInputText = realUserTextParts
     .map((p) => p.text ?? "")
     .join("\n")
 
@@ -80,22 +86,21 @@ export async function executeUserPromptSubmitHooks(
    for (const matcher of matchers) {
      if (!matcher.hooks || matcher.hooks.length === 0) continue
      for (const hook of matcher.hooks) {
-       if (hook.type !== "command") continue
+       if (hook.type !== "command" && hook.type !== "http") continue
 
-      if (isHookCommandDisabled("UserPromptSubmit", hook.command, extendedConfig ?? null)) {
-        log("UserPromptSubmit hook command skipped (disabled by config)", { command: hook.command })
+      const hookName = getHookIdentifier(hook)
+      if (isHookCommandDisabled("UserPromptSubmit", hookName, extendedConfig ?? null)) {
+        log("UserPromptSubmit hook command skipped (disabled by config)", { command: hookName })
         continue
       }
 
-      const result = await executeHookCommand(
-        hook.command,
-        JSON.stringify(stdinData),
-        ctx.cwd,
-        { forceZsh: DEFAULT_CONFIG.forceZsh, zshPath: DEFAULT_CONFIG.zshPath }
-      )
+      const result = await dispatchHook(hook, JSON.stringify(stdinData), ctx.cwd)
 
       if (result.stdout) {
-        const output = result.stdout.trim()
+        const output = normalizeHookText(result.stdout)
+        if (output === undefined) {
+          continue
+        }
         if (output.startsWith(USER_PROMPT_SUBMIT_TAG_OPEN)) {
           messages.push(output)
         } else {
@@ -109,14 +114,16 @@ export async function executeUserPromptSubmitHooks(
           if (output.decision === "block") {
             return {
               block: true,
-              reason: output.reason || result.stderr,
+              reason: normalizeHookText(output.reason) ?? normalizeHookText(result.stderr),
               modifiedParts,
               messages,
             }
           }
-         } catch {
-          // Ignore JSON parse errors
-         }
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) {
+            throw error
+          }
+        }
       }
     }
   }

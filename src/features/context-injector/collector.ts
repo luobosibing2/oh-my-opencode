@@ -14,6 +14,8 @@ const PRIORITY_ORDER: Record<ContextPriority, number> = {
 
 const CONTEXT_SEPARATOR = "\n\n---\n\n"
 
+let registrationCounter = 0
+
 export class ContextCollector {
   private sessions: Map<string, Map<string, ContextEntry>> = new Map()
 
@@ -30,7 +32,7 @@ export class ContextCollector {
       source: options.source,
       content: options.content,
       priority: options.priority ?? "normal",
-      timestamp: Date.now(),
+      registrationOrder: ++registrationCounter,
       metadata: options.metadata,
     }
 
@@ -68,6 +70,10 @@ export class ContextCollector {
     this.sessions.delete(sessionID)
   }
 
+  clearAll(): void {
+    this.sessions.clear()
+  }
+
   hasPending(sessionID: string): boolean {
     const sessionMap = this.sessions.get(sessionID)
     return sessionMap !== undefined && sessionMap.size > 0
@@ -77,7 +83,7 @@ export class ContextCollector {
     return entries.sort((a, b) => {
       const priorityDiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]
       if (priorityDiff !== 0) return priorityDiff
-      return a.timestamp - b.timestamp
+      return a.registrationOrder - b.registrationOrder
     })
   }
 }

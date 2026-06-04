@@ -11,8 +11,16 @@ import {
   createRulesInjectorHook,
   createTasksTodowriteDisablerHook,
   createWriteExistingFileGuardHook,
+  createBashFileReadGuardHook,
   createHashlineReadEnhancerHook,
+  createReadImageResizerHook,
   createJsonErrorRecoveryHook,
+  createTodoDescriptionOverrideHook,
+  createWebFetchRedirectGuardHook,
+  createTeamToolGating,
+  createFsyncSkipWarningHook,
+  createNotepadWriteGuardHook,
+  createPlanFormatValidatorHook,
 } from "../../hooks"
 import {
   getOpenCodeVersion,
@@ -31,8 +39,16 @@ export type ToolGuardHooks = {
   rulesInjector: ReturnType<typeof createRulesInjectorHook> | null
   tasksTodowriteDisabler: ReturnType<typeof createTasksTodowriteDisablerHook> | null
   writeExistingFileGuard: ReturnType<typeof createWriteExistingFileGuardHook> | null
+  bashFileReadGuard: ReturnType<typeof createBashFileReadGuardHook> | null
   hashlineReadEnhancer: ReturnType<typeof createHashlineReadEnhancerHook> | null
   jsonErrorRecovery: ReturnType<typeof createJsonErrorRecoveryHook> | null
+  readImageResizer: ReturnType<typeof createReadImageResizerHook> | null
+  todoDescriptionOverride: ReturnType<typeof createTodoDescriptionOverrideHook> | null
+  webfetchRedirectGuard: ReturnType<typeof createWebFetchRedirectGuardHook> | null
+  fsyncSkipWarning: ReturnType<typeof createFsyncSkipWarningHook> | null
+  teamToolGating: ReturnType<typeof createTeamToolGating> | null
+  notepadWriteGuard: ReturnType<typeof createNotepadWriteGuardHook> | null
+  planFormatValidator: ReturnType<typeof createPlanFormatValidatorHook> | null
 }
 
 export function createToolGuardHooks(args: {
@@ -83,9 +99,13 @@ export function createToolGuardHooks(args: {
     ? safeHook("empty-task-response-detector", () => createEmptyTaskResponseDetectorHook(ctx))
     : null
 
+  const cc = pluginConfig.claude_code
+  const skipClaudeUserRules = cc?.hooks === false
   const rulesInjector = isHookEnabled("rules-injector")
     ? safeHook("rules-injector", () =>
-        createRulesInjectorHook(ctx, modelCacheState))
+        createRulesInjectorHook(ctx, modelCacheState, {
+          skipClaudeUserRules,
+        }))
     : null
 
   const tasksTodowriteDisabler = isHookEnabled("tasks-todowrite-disabler")
@@ -97,12 +117,44 @@ export function createToolGuardHooks(args: {
     ? safeHook("write-existing-file-guard", () => createWriteExistingFileGuardHook(ctx))
     : null
 
+  const bashFileReadGuard = isHookEnabled("bash-file-read-guard")
+    ? safeHook("bash-file-read-guard", () => createBashFileReadGuardHook())
+    : null
+
   const hashlineReadEnhancer = isHookEnabled("hashline-read-enhancer")
-    ? safeHook("hashline-read-enhancer", () => createHashlineReadEnhancerHook(ctx, { hashline_edit: { enabled: pluginConfig.hashline_edit ?? true } }))
+    ? safeHook("hashline-read-enhancer", () => createHashlineReadEnhancerHook(ctx, { hashline_edit: { enabled: pluginConfig.hashline_edit ?? false } }))
     : null
 
   const jsonErrorRecovery = isHookEnabled("json-error-recovery")
     ? safeHook("json-error-recovery", () => createJsonErrorRecoveryHook(ctx))
+    : null
+
+  const readImageResizer = isHookEnabled("read-image-resizer")
+    ? safeHook("read-image-resizer", () => createReadImageResizerHook(ctx))
+    : null
+
+  const todoDescriptionOverride = isHookEnabled("todo-description-override")
+    ? safeHook("todo-description-override", () => createTodoDescriptionOverrideHook())
+    : null
+
+  const webfetchRedirectGuard = isHookEnabled("webfetch-redirect-guard")
+    ? safeHook("webfetch-redirect-guard", () => createWebFetchRedirectGuardHook(ctx))
+    : null
+
+  const teamToolGating = isHookEnabled("team-tool-gating")
+    ? safeHook("team-tool-gating", () => createTeamToolGating(ctx, pluginConfig.team_mode))
+    : null
+
+  const fsyncSkipWarning = isHookEnabled("fsync-skip-warning")
+    ? safeHook("fsync-skip-warning", () => createFsyncSkipWarningHook())
+    : null
+
+  const planFormatValidator = isHookEnabled("plan-format-validator")
+    ? safeHook("plan-format-validator", () => createPlanFormatValidatorHook(ctx))
+    : null
+
+  const notepadWriteGuard = isHookEnabled("notepad-write-guard")
+    ? safeHook("notepad-write-guard", () => createNotepadWriteGuardHook())
     : null
 
   return {
@@ -114,7 +166,15 @@ export function createToolGuardHooks(args: {
     rulesInjector,
     tasksTodowriteDisabler,
     writeExistingFileGuard,
+    bashFileReadGuard,
     hashlineReadEnhancer,
     jsonErrorRecovery,
+    readImageResizer,
+    todoDescriptionOverride,
+    webfetchRedirectGuard,
+    fsyncSkipWarning,
+    teamToolGating,
+    notepadWriteGuard,
+    planFormatValidator,
   }
 }
