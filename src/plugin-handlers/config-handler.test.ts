@@ -231,64 +231,14 @@ describe("MCP env allowlist initialization", () => {
   })
 })
 
-describe("AutoModel provider registration", () => {
-  test("registers the AutoModel gateway provider with a fake API key only", async () => {
+describe("AutoModel agent routing config boundary", () => {
+  test("does not register the AutoModel provider when routing is enabled", async () => {
     // given
     const pluginConfig = createPluginConfig({
       automodel_agent_routing: {
         enabled: true,
         provider_id: "automodel",
         model_id: "AutoModel",
-        gateway_base_url: "https://www.micuapi.ai",
-        fake_api_key: "sk-omoc-automodel-fake",
-      },
-    } as never)
-    const config: Record<string, unknown> = {
-      agent: {},
-    }
-    const handler = createConfigHandler({
-      ctx: { directory: "/tmp" },
-      pluginConfig,
-      modelCacheState: {
-        anthropicContext1MEnabled: false,
-        modelContextLimitsCache: new Map(),
-      },
-    })
-
-    // when
-    await handler(config)
-
-    // then
-    const providers = config.providers as Record<string, Record<string, unknown>>
-    const automodelProvider = providers["automodel"]
-    expect(automodelProvider.endpoint).toEqual({
-      type: "aisdk",
-      package: "@ai-sdk/openai-compatible",
-      url: "https://www.micuapi.ai",
-    })
-    expect(automodelProvider.options).toEqual({
-      aisdk: {
-        provider: {
-          apiKey: "sk-omoc-automodel-fake",
-        },
-      },
-    })
-    expect((automodelProvider.models as Record<string, unknown>)["AutoModel"]).toBeDefined()
-
-    const legacyProviders = config.provider as Record<string, Record<string, unknown>>
-    expect(legacyProviders["automodel"].npm).toBe("@ai-sdk/openai-compatible")
-    expect(JSON.stringify(config)).toContain("sk-omoc-automodel-fake")
-    expect(JSON.stringify(config)).not.toContain("SK-plan")
-    expect(JSON.stringify(config)).not.toContain("SK-execute")
-  })
-
-  test("does not register AutoModel provider when routing is disabled", async () => {
-    // given
-    const pluginConfig = createPluginConfig({
-      automodel_agent_routing: {
-        enabled: false,
-        gateway_base_url: "https://www.micuapi.ai",
-        fake_api_key: "sk-omoc-automodel-fake",
       },
     } as never)
     const config: Record<string, unknown> = {
@@ -311,6 +261,48 @@ describe("AutoModel provider registration", () => {
     // then
     expect((config.providers as Record<string, unknown>)["automodel"]).toBeUndefined()
     expect((config.provider as Record<string, unknown>)["automodel"]).toBeUndefined()
+    expect(JSON.stringify(config)).not.toContain("sk-omoc-automodel-fake")
+    expect(JSON.stringify(config)).not.toContain("SK-plan")
+    expect(JSON.stringify(config)).not.toContain("SK-execute")
+  })
+
+  test("preserves user-registered AutoModel provider when routing is enabled", async () => {
+    // given
+    const pluginConfig = createPluginConfig({
+      automodel_agent_routing: {
+        enabled: true,
+        provider_id: "automodel",
+        model_id: "AutoModel",
+      },
+    } as never)
+    const userProvider = {
+      npm: "@ai-sdk/openai-compatible",
+      api: "http://127.0.0.1:8787/v1",
+      options: { apiKey: "sk-omoc-automodel-fake" },
+      models: { AutoModel: { name: "AutoModel" } },
+    }
+    const config: Record<string, unknown> = {
+      providers: {},
+      provider: {
+        automodel: userProvider,
+      },
+      agent: {},
+    }
+    const handler = createConfigHandler({
+      ctx: { directory: "/tmp" },
+      pluginConfig,
+      modelCacheState: {
+        anthropicContext1MEnabled: false,
+        modelContextLimitsCache: new Map(),
+      },
+    })
+
+    // when
+    await handler(config)
+
+    // then
+    expect((config.providers as Record<string, unknown>)["automodel"]).toBeUndefined()
+    expect((config.provider as Record<string, unknown>)["automodel"]).toBe(userProvider)
   })
 })
 

@@ -607,8 +607,6 @@ function createPlanOnlyRoutingConfig(): Record<string, unknown> {
       enabled: true,
       provider_id: "automodel",
       model_id: "AutoModel",
-      gateway_base_url: "https://www.micuapi.ai",
-      fake_api_key: "sk-omoc-automodel-fake",
     },
   }
 }

@@ -1,11 +1,11 @@
 # AutoModel Agent Routing
 
-本文档记录 AutoModel agent 路由方案。目标是让 OpenCode UI 里只暴露一个 `automodel/AutoModel`，插件不再劫持模型名；Plan 和普通执行请求通过运行时 header 标记交给 gateway 侧路由。
+本文档记录 AutoModel agent 路由方案。目标是在 `opencode.json` 中显式注册一个可选的 `automodel/AutoModel`，插件不再注册或劫持模型名；当用户选择 AutoModel 时，Plan 和普通执行请求通过运行时 header 标记交给 gateway 侧路由。
 
 ## Requirements
 
-1. OpenCode 配置、插件配置、仓库文件和 `/models` 输出里只出现 fake/default SK。
-2. UI 只需要选择 `automodel/AutoModel`，不再暴露 `plan-only/glm-5.1`。
+1. `automodel/AutoModel` 的 provider、gateway URL 和 fake/default SK 由用户在 `opencode.json` 中显式配置。
+2. 插件配置只保存 `enabled`、`provider_id` 和 `model_id`，不保存 gateway URL、fake SK、route token 或真实 SK。
 3. Plan agent 请求打 `x-omoc-agent-route: plan`。
 4. 非 Plan agent 请求打 `x-omoc-agent-route: execute`。
 5. 插件不写入 `Authorization: Bearer SK-plan` 或 `Authorization: Bearer SK-execute`；这两个路由 token 由 gateway 服务端内部持有。
@@ -13,14 +13,15 @@
 
 ## Solution Thinking
 
-核心思路是把“模型选择”和“真实模型路由”拆开：OpenCode 只负责选择一个稳定可见的 `AutoModel`，插件只负责把当前请求标记成 Plan 或 execute，gateway 才负责把这个标记映射到真实 SK 和真实上游模型。
+核心思路是把“模型注册”、“请求标记”和“真实模型路由”拆开：`opencode.json` 负责注册一个可选的 `AutoModel`，插件只负责把当前 AutoModel 请求标记成 Plan 或 execute，gateway 才负责把这个标记映射到真实 SK 和真实上游模型。
 
-旧方案依赖模型名劫持：Plan 时把当前消息改成 `plan-only/glm-5.1`，非 Plan 时再恢复普通模型。这能工作，但 UI 会看到额外模型，也需要处理 Plan 结束后的模型污染问题。新方案改成单模型后，UI 不再切换模型名，也不需要恢复逻辑；用户只需要始终选择 `AutoModel`，切换 agent 就能改变 gateway 的实际路由。
+旧方案依赖模型名劫持：Plan 时把当前消息改成 `plan-only/glm-5.1`，非 Plan 时再恢复普通模型。这能工作，但 UI 会看到额外模型，也需要处理 Plan 结束后的模型污染问题。新方案改成显式配置的 AutoModel 后，UI 不再切换模型名，也不需要恢复逻辑；用户只有在想使用 gateway 自动路由时才手动选择 `AutoModel`，普通模型完全不受影响。
 
 运行链路是：
 
 ```text
-OpenCode UI selects automodel/AutoModel
+opencode.json registers automodel/AutoModel with fake SK
+  -> OpenCode UI may select automodel/AutoModel
   -> plugin marks the request as plan or execute
   -> gateway validates fake key + route marker + AutoModel body
   -> gateway maps the marker to an internal SK and upstream model
@@ -38,7 +39,7 @@ Plan 请求和普通执行请求的差异只体现在内部 route marker 上：
 
 ## Security Boundary
 
-OpenCode、插件配置和仓库文件里不保存 `SK-plan`、`SK-execute` 或真实上游 SK。它们只存在于 gateway 服务端环境中。插件也不直接改写 `Authorization` 为这些内部 token，因为 OpenCode 的底层 provider/auth 可能覆盖普通 header，而且把路由 token 放到用户机器侧也不符合密钥隔离目标。
+插件配置不保存 gateway URL、fake/default SK、`SK-plan`、`SK-execute` 或真实上游 SK。`opencode.json` 只保存 AutoModel provider 的 fake/default SK 和 gateway URL；`SK-plan`、`SK-execute` 与真实上游 SK 只存在于 gateway 服务端环境中。插件也不直接改写 `Authorization` 为这些内部 token，因为 OpenCode 的底层 provider/auth 可能覆盖普通 header，而且把路由 token 放到用户机器侧也不符合密钥隔离目标。
 
 gateway 转发上游前需要做三件事：
 
@@ -46,13 +47,13 @@ gateway 转发上游前需要做三件事：
 2. 把 fake/default SK 替换成 gateway 内部选择的真实 SK。
 3. 把请求体里的 `AutoModel` 改成真实上游模型名。
 
-因此，上游只看到正常的 OpenAI-compatible 请求；用户机器侧只看到 `AutoModel` 和 fake/default SK。
+因此，上游只看到正常的 OpenAI-compatible 请求；OpenCode 侧只看到用户显式配置的 `AutoModel`、gateway URL 和 fake/default SK。
 
 ## Verification Method
 
 验证分成三层：
 
-1. 配置验证：OpenCode 配置和 `/models` 只暴露 `automodel/AutoModel`，只出现 fake/default SK，不出现 `SK-plan`、`SK-execute` 或真实上游 SK。
+1. 配置验证：`opencode.json` 显式注册 `automodel/AutoModel`，插件配置只包含 `enabled/provider_id/model_id`，不出现 `SK-plan`、`SK-execute` 或真实上游 SK。
 2. hook 验证：Plan agent 的 `AutoModel` 请求会带 `x-omoc-agent-route: plan`；非 Plan agent 的 `AutoModel` 请求会带 `x-omoc-agent-route: execute`；普通非 AutoModel 请求不打这个 header。
 3. gateway 验证：Plan marker 路由到 Plan 模型，execute marker 路由到 execute 模型；无 marker、非法 marker、fake/default SK 不匹配或 body model 不是 `AutoModel` 时返回 403。
 
@@ -63,14 +64,14 @@ gateway 转发上游前需要做三件事：
 AutoModel 路由由三段逻辑组成：
 
 ```text
-config hook registers automodel/AutoModel with fake SK
-  -> chat.headers marks plan|execute per request
+opencode.json registers automodel/AutoModel with fake SK
+  -> chat.headers marks AutoModel requests as plan|execute
   -> gateway maps marker to internal SK/model and strips marker before forwarding
 ```
 
 ### Configuration Schema
 
-新增配置键 `automodel_agent_routing`，字段定义在 [`automodel-agent-routing.ts`](../../src/config/schema/automodel-agent-routing.ts#L3)。默认 provider 是 `automodel`，默认 model 是 `AutoModel`，默认 gateway 是 `https://www.micuapi.ai`，默认 fake key 是 `sk-omoc-automodel-fake`；这些默认值集中在 [`automodel-agent-routing.ts`](../../src/shared/automodel-agent-routing.ts#L19)。
+新增配置键 `automodel_agent_routing`，字段定义在 [`automodel-agent-routing.ts`](../../src/config/schema/automodel-agent-routing.ts#L3)。默认 provider 是 `automodel`，默认 model 是 `AutoModel`；这些默认值集中在 [`automodel-agent-routing.ts`](../../src/shared/automodel-agent-routing.ts#L19)。
 
 示例：
 
@@ -79,26 +80,52 @@ config hook registers automodel/AutoModel with fake SK
   "automodel_agent_routing": {
     "enabled": true,
     "provider_id": "automodel",
-    "model_id": "AutoModel",
-    "gateway_base_url": "http://127.0.0.1:8787/v1",
-    "fake_api_key": "sk-omoc-automodel-fake"
+    "model_id": "AutoModel"
   }
 }
 ```
 
-`SK-plan`、`SK-execute` 和真实上游 SK 都只放在 gateway 服务端。插件侧只负责让 gateway 知道当前请求来自 Plan 还是普通执行。
+AutoModel provider 应在 `opencode.json` 中显式注册：
 
-### Provider Registration
+```jsonc
+{
+  "provider": {
+    "automodel": {
+      "npm": "@ai-sdk/openai-compatible",
+      "api": "http://127.0.0.1:8787/v1",
+      "options": {
+        "apiKey": "sk-omoc-automodel-fake"
+      },
+      "models": {
+        "AutoModel": {
+          "name": "AutoModel",
+          "tool_call": true,
+          "limit": {
+            "context": 128000,
+            "output": 8192
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
+  }
+}
+```
 
-`config` hook 会在 OpenCode 配置里注入 `automodel` provider，让 `/models` 只看到 `AutoModel`，provider options 里只写 fake SK。当前实现同时兼容新旧 provider 配置形态：
+`opencode.json` 不需要设置顶层 `"model": "automodel/AutoModel"`。AutoModel 只是模型列表中的可选项；只有用户手动选择它时，插件才会添加 route marker。
 
-- 新 `providers` 结构：[`applyAutoModelProviderConfig`](../../src/plugin-handlers/automodel-provider-config-handler.ts#L49)
-- 旧 `provider` 结构：[`applyAutoModelProviderConfig`](../../src/plugin-handlers/automodel-provider-config-handler.ts#L73)
+### Provider Registration Boundary
+
+插件不会在 OpenCode 配置里注入 `automodel` provider，也不会补齐 gateway URL 或 fake key。`opencode.json` 是 provider/model 注册的唯一来源；插件只读取 `automodel_agent_routing.provider_id` 和 `automodel_agent_routing.model_id` 来判断当前请求是否需要打 route marker。
+
 - hook 接入位置：[`createConfigHandler`](../../src/plugin-handlers/config-handler.ts#L43)
 
 ### Message Routing
 
-`chat.message` 不再做模型劫持。Plan agent、`Prometheus - Plan Builder` 和普通 Build agent 都保持用户选中的 `automodel/AutoModel`。模型状态记忆只记录当前模型，不再需要旧方案的污染恢复逻辑，见 [`rememberNormalSessionModel`](../../src/plugin/chat-message.ts#L116) 和 hook 调用顺序 [`chat-message.ts`](../../src/plugin/chat-message.ts#L349)。
+`chat.message` 不做模型劫持。Plan agent、`Prometheus - Plan Builder` 和普通 Build agent 都保持用户选中的模型；如果用户选择普通模型，就继续使用普通模型。模型状态记忆只记录当前模型，不需要旧方案的污染恢复逻辑，见 [`rememberNormalSessionModel`](../../src/plugin/chat-message.ts#L116) 和 hook 调用顺序 [`chat-message.ts`](../../src/plugin/chat-message.ts#L349)。
 
 `message.updated` 事件也不再跳过特定隔离模型；有真实 message model 时会正常同步 session model state，见 [`event.ts`](../../src/plugin/event.ts#L792)。
 
@@ -128,16 +155,17 @@ config hook registers automodel/AutoModel with fake SK
 | Web UI Plan alias + AutoModel | 添加 `x-omoc-agent-route: plan` | [`chat-headers.test.ts`](../../src/plugin/chat-headers.test.ts#L193) |
 | 非 Plan + AutoModel | 添加 `x-omoc-agent-route: execute` | [`chat-headers.test.ts`](../../src/plugin/chat-headers.test.ts#L217) |
 | 普通模型请求 | 不添加 route header | [`chat-headers.test.ts`](../../src/plugin/chat-headers.test.ts#L241) |
-| `config` hook provider 注册 | `automodel/AutoModel` 可见且只含 fake SK | [`config-handler.test.ts`](../../src/plugin-handlers/config-handler.test.ts#L234) |
+| `config` hook provider 边界 | 插件不注册 `automodel` provider，保留用户显式配置 | [`config-handler.test.ts`](../../src/plugin-handlers/config-handler.test.ts#L234) |
 | 配置 schema | `automodel_agent_routing` 可解析 | [`oh-my-opencode-config.test.ts`](../../src/config/schema/oh-my-opencode-config.test.ts#L97) |
 
 端到端验收：
 
-1. UI 选择 `automodel/AutoModel`。
-2. 切到 Plan alias 后，gateway 日志显示 `route=plan`，上游模型由 gateway 内部决定。
-3. 切回 Build 后，gateway 日志显示 `route=execute`。
-4. `/models` 不出现 `plan-only/glm-5.1`、`SK-plan` 或 `SK-execute`。
-5. 无 marker、非法 marker 或 fake/default SK 不匹配时，gateway 返回 403。
+1. `opencode.json` 注册 `automodel/AutoModel` provider，但不设置顶层默认 `model`。
+2. UI 手动选择 `automodel/AutoModel`。
+3. 切到 Plan alias 后，gateway 日志显示 `route=plan`，上游模型由 gateway 内部决定。
+4. 切回 Build 后，gateway 日志显示 `route=execute`。
+5. UI 选择普通模型时，插件不添加 `x-omoc-agent-route`。
+6. 无 marker、非法 marker 或 fake/default SK 不匹配时，gateway 返回 403。
 
 ## Demo Runtime
 
@@ -149,4 +177,4 @@ config hook registers automodel/AutoModel with fake SK
 | OpenCode backend | `http://127.0.0.1:4096` |
 | OpenCode Web UI | `http://127.0.0.1:4444` |
 
-演示时在图形化界面只选择 `AutoModel`。切换 agent 会改变 gateway 看到的 `x-omoc-agent-route`，不会改变 UI 里的模型名。
+演示时在图形化界面手动选择 `AutoModel` 才会启用 gateway agent routing。切换 agent 会改变 gateway 看到的 `x-omoc-agent-route`，不会改变 UI 里的模型名；选择普通模型时不会打这个 route header。

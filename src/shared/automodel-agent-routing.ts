@@ -8,8 +8,6 @@ export type ModelReference = {
 export type AutoModelAgentRoutingSettings = {
   providerID: string
   modelID: string
-  gatewayBaseURL: string
-  fakeApiKey: string
 }
 
 export const AUTOMODEL_AGENT_ROUTE_HEADER = "x-omoc-agent-route"
@@ -18,8 +16,6 @@ export const AUTOMODEL_EXECUTE_ROUTE_VALUE = "execute"
 
 const DEFAULT_PROVIDER_ID = "automodel"
 const DEFAULT_MODEL_ID = "AutoModel"
-const DEFAULT_GATEWAY_BASE_URL = "https://www.micuapi.ai"
-const DEFAULT_FAKE_API_KEY = "sk-omoc-automodel-fake"
 const PLAN_AGENT_ALIASES = new Set(["plan", "prometheus - plan builder"])
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -42,8 +38,6 @@ export function getAutoModelAgentRoutingSettings(
   return {
     providerID: nonEmptyString(config.provider_id) ?? DEFAULT_PROVIDER_ID,
     modelID: nonEmptyString(config.model_id) ?? DEFAULT_MODEL_ID,
-    gatewayBaseURL: nonEmptyString(config.gateway_base_url) ?? DEFAULT_GATEWAY_BASE_URL,
-    fakeApiKey: nonEmptyString(config.fake_api_key) ?? DEFAULT_FAKE_API_KEY,
   }
 }
 

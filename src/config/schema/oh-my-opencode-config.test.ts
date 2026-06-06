@@ -102,8 +102,6 @@ describe("OhMyOpenCodeConfigSchema automodel_agent_routing", () => {
         enabled: true,
         provider_id: "automodel",
         model_id: "AutoModel",
-        gateway_base_url: "https://www.micuapi.ai",
-        fake_api_key: "sk-omoc-automodel-fake",
       },
     }
 
@@ -129,5 +127,24 @@ describe("OhMyOpenCodeConfigSchema automodel_agent_routing", () => {
     if (result.success) {
       expect(result.data.automodel_agent_routing).toBeUndefined()
     }
+  })
+
+  it("rejects provider registration fields", () => {
+    // given
+    const rawConfig = {
+      automodel_agent_routing: {
+        enabled: true,
+        provider_id: "automodel",
+        model_id: "AutoModel",
+        gateway_base_url: "https://www.micuapi.ai",
+        fake_api_key: "sk-omoc-automodel-fake",
+      },
+    }
+
+    // when
+    const result = OhMyOpenCodeConfigSchema.safeParse(rawConfig)
+
+    // then
+    expect(result.success).toBe(false)
   })
 })

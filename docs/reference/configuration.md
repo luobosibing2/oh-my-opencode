@@ -652,16 +652,14 @@ To disable the LSP MCP entirely:
 
 ### AutoModel Agent Routing
 
-`automodel_agent_routing` registers a single OpenCode-visible `AutoModel` and marks each AutoModel request as either Plan or execute traffic. The OpenCode-visible provider uses a fake API key; a separate gateway maps the route marker to internal `SK-plan` / `SK-execute` values and real upstream models.
+`automodel_agent_routing` marks explicitly configured `automodel/AutoModel` requests as either Plan or execute traffic. Register the `AutoModel` provider in `opencode.json`; the plugin only adds the route marker header. The OpenCode-visible provider uses a fake API key, while a separate gateway maps the route marker to internal `SK-plan` / `SK-execute` values and real upstream models.
 
 ```jsonc
 {
   "automodel_agent_routing": {
     "enabled": true,
     "provider_id": "automodel",
-    "model_id": "AutoModel",
-    "gateway_base_url": "https://www.micuapi.ai",
-    "fake_api_key": "sk-omoc-automodel-fake"
+    "model_id": "AutoModel"
   }
 }
 ```
@@ -669,10 +667,8 @@ To disable the LSP MCP entirely:
 | Option | Default | Description |
 | ------ | ------- | ----------- |
 | `enabled` | `false` | Enable AutoModel agent routing |
-| `provider_id` | `automodel` | OpenCode provider ID injected by the plugin |
-| `model_id` | `AutoModel` | Single visible model routed by the gateway |
-| `gateway_base_url` | `https://www.micuapi.ai` | OpenAI-compatible gateway base URL |
-| `fake_api_key` | `sk-omoc-automodel-fake` | API key stored in OpenCode config; never use a real secret or route token here |
+| `provider_id` | `automodel` | OpenCode provider ID to recognize for route marking |
+| `model_id` | `AutoModel` | OpenCode model ID to recognize for route marking |
 
 Full design and verification notes: [AutoModel Agent Routing](./automodel-agent-routing.md).
 

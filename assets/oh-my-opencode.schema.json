@@ -6368,14 +6368,6 @@
         "model_id": {
           "type": "string",
           "minLength": 1
-        },
-        "gateway_base_url": {
-          "type": "string",
-          "format": "uri"
-        },
-        "fake_api_key": {
-          "type": "string",
-          "minLength": 1
         }
       },
       "additionalProperties": false

@@ -9,8 +9,6 @@ function createPlanOnlyRoutingConfig(): Record<string, unknown> {
       enabled: true,
       provider_id: "automodel",
       model_id: "AutoModel",
-      gateway_base_url: "https://www.micuapi.ai",
-      fake_api_key: "sk-omoc-automodel-fake",
     },
   }
 }
@@ -253,6 +251,30 @@ describe("createChatHeadersHandler", () => {
         model: { providerID: "micuapi", id: "deepseek-v4-flash" },
         message: {
           id: "msg_normal",
+          role: "user",
+        },
+      },
+      output,
+    )
+
+    expect(output.headers["x-omoc-agent-route"]).toBeUndefined()
+  })
+
+  test("does not add agent route header for Plan agents using ordinary models", async () => {
+    const handler = createChatHeadersHandler({
+      ctx: createSilentContext(),
+      pluginConfig: createPlanOnlyRoutingConfig() as never,
+    })
+    const output: { headers: Record<string, string> } = { headers: {} }
+
+    await handler(
+      {
+        sessionID: "ses_plan_normal",
+        agent: "plan",
+        provider: { id: "micuapi" },
+        model: { providerID: "micuapi", id: "deepseek-v4-flash" },
+        message: {
+          id: "msg_plan_normal",
           role: "user",
         },
       },
