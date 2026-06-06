@@ -1,5 +1,5 @@
 import type { OhMyOpenCodeConfig } from "../config"
-import { getPlanOnlyModelRoutingSettings } from "../shared/plan-only-model-routing"
+import { getAutoModelAgentRoutingSettings } from "../shared/automodel-agent-routing"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -20,14 +20,14 @@ function mergeRecord(value: unknown): UnknownRecord {
   return isRecord(value) ? { ...value } : {}
 }
 
-export function applyPlanOnlyProviderConfig(params: {
+export function applyAutoModelProviderConfig(params: {
   config: UnknownRecord
   pluginConfig: OhMyOpenCodeConfig
 }): void {
-  const settings = getPlanOnlyModelRoutingSettings(params.pluginConfig)
+  const settings = getAutoModelAgentRoutingSettings(params.pluginConfig)
   if (!settings) return
 
-  const providerName = "Plan-only Gateway"
+  const providerName = "AutoModel Gateway"
   const endpoint = {
     type: "aisdk",
     package: "@ai-sdk/openai-compatible",
@@ -51,7 +51,6 @@ export function applyPlanOnlyProviderConfig(params: {
   const existingOptions = mergeRecord(existingProvider.options)
   const existingAisdkOptions = mergeRecord(existingOptions.aisdk)
   const existingAisdkProviderOptions = mergeRecord(existingAisdkOptions.provider)
-  const existingModels = mergeRecord(existingProvider.models)
   providers[settings.providerID] = {
     ...existingProvider,
     name: existingProvider.name ?? providerName,
@@ -67,18 +66,13 @@ export function applyPlanOnlyProviderConfig(params: {
       },
     },
     models: {
-      ...existingModels,
-      [settings.modelID]: {
-        ...mergeRecord(existingModels[settings.modelID]),
-        ...modelConfig,
-      },
+      [settings.modelID]: modelConfig,
     },
   }
 
   const legacyProviders = ensureRecord(params.config, "provider")
   const existingLegacyProvider = mergeRecord(legacyProviders[settings.providerID])
   const existingLegacyOptions = mergeRecord(existingLegacyProvider.options)
-  const existingLegacyModels = mergeRecord(existingLegacyProvider.models)
   legacyProviders[settings.providerID] = {
     ...existingLegacyProvider,
     name: existingLegacyProvider.name ?? providerName,
@@ -89,9 +83,7 @@ export function applyPlanOnlyProviderConfig(params: {
       apiKey: settings.fakeApiKey,
     },
     models: {
-      ...existingLegacyModels,
       [settings.modelID]: {
-        ...mergeRecord(existingLegacyModels[settings.modelID]),
         name: settings.modelID,
         tool_call: true,
         modalities: {

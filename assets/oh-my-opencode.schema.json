@@ -6355,7 +6355,7 @@
       ],
       "additionalProperties": false
     },
-    "plan_only_model_routing": {
+    "automodel_agent_routing": {
       "type": "object",
       "properties": {
         "enabled": {
@@ -6374,10 +6374,6 @@
           "format": "uri"
         },
         "fake_api_key": {
-          "type": "string",
-          "minLength": 1
-        },
-        "fallback_model": {
           "type": "string",
           "minLength": 1
         }

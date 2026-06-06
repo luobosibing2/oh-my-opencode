@@ -7,7 +7,7 @@ import { applyAgentConfig } from "./agent-config-handler";
 import { applyCommandConfig } from "./command-config-handler";
 import { applyHookConfig } from "./hook-config-handler";
 import { applyMcpConfig } from "./mcp-config-handler";
-import { applyPlanOnlyProviderConfig } from "./plan-only-provider-config-handler";
+import { applyAutoModelProviderConfig } from "./automodel-provider-config-handler";
 import { applyProviderConfig } from "./provider-config-handler";
 import { loadPluginComponents } from "./plugin-components-loader";
 import { applyToolConfig } from "./tool-config-handler";
@@ -41,7 +41,7 @@ export function createConfigHandler(deps: ConfigHandlerDeps) {
     const formatterConfig = config.formatter;
 
     setAdditionalAllowedMcpEnvVars(pluginConfig.mcp_env_allowlist ?? [])
-    applyPlanOnlyProviderConfig({
+    applyAutoModelProviderConfig({
       config,
       pluginConfig,
     })

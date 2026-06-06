@@ -94,17 +94,16 @@ describe("OhMyOpenCodeConfigSchema agent_order", () => {
   })
 })
 
-describe("OhMyOpenCodeConfigSchema plan_only_model_routing", () => {
-  it("accepts Plan-only model routing settings when provided", () => {
+describe("OhMyOpenCodeConfigSchema automodel_agent_routing", () => {
+  it("accepts AutoModel agent routing settings when provided", () => {
     // given
     const rawConfig = {
-      plan_only_model_routing: {
+      automodel_agent_routing: {
         enabled: true,
-        provider_id: "plan-only",
-        model_id: "glm-5.1",
+        provider_id: "automodel",
+        model_id: "AutoModel",
         gateway_base_url: "https://www.micuapi.ai",
-        fake_api_key: "sk-omoc-plan-only-fake",
-        fallback_model: "micuapi/deepseek-v4-flash",
+        fake_api_key: "sk-omoc-automodel-fake",
       },
     }
 
@@ -114,11 +113,11 @@ describe("OhMyOpenCodeConfigSchema plan_only_model_routing", () => {
     // then
     expect(result.success).toBe(true)
     if (result.success) {
-      expect(result.data.plan_only_model_routing).toEqual(rawConfig.plan_only_model_routing)
+      expect(result.data.automodel_agent_routing).toEqual(rawConfig.automodel_agent_routing)
     }
   })
 
-  it("allows plan_only_model_routing omission", () => {
+  it("allows automodel_agent_routing omission", () => {
     // given
     const rawConfig = {}
 
@@ -128,7 +127,7 @@ describe("OhMyOpenCodeConfigSchema plan_only_model_routing", () => {
     // then
     expect(result.success).toBe(true)
     if (result.success) {
-      expect(result.data.plan_only_model_routing).toBeUndefined()
+      expect(result.data.automodel_agent_routing).toBeUndefined()
     }
   })
 })

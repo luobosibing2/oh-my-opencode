@@ -5,13 +5,12 @@ import { createChatHeadersHandler } from "./chat-headers"
 
 function createPlanOnlyRoutingConfig(): Record<string, unknown> {
   return {
-    plan_only_model_routing: {
+    automodel_agent_routing: {
       enabled: true,
-      provider_id: "plan-only",
-      model_id: "glm-5.1",
+      provider_id: "automodel",
+      model_id: "AutoModel",
       gateway_base_url: "https://www.micuapi.ai",
-      fake_api_key: "sk-omoc-plan-only-fake",
-      fallback_model: "micuapi/deepseek-v4-flash",
+      fake_api_key: "sk-omoc-automodel-fake",
     },
   }
 }
@@ -167,7 +166,7 @@ describe("createChatHeadersHandler", () => {
     expect(output.headers["x-initiator"]).toBeUndefined()
   })
 
-  test("adds Plan route header only for Plan agent using the Plan-only model", async () => {
+  test("adds Plan agent route header for Plan agent using AutoModel", async () => {
     const handler = createChatHeadersHandler({
       ctx: createSilentContext(),
       pluginConfig: createPlanOnlyRoutingConfig() as never,
@@ -178,8 +177,8 @@ describe("createChatHeadersHandler", () => {
       {
         sessionID: "ses_plan",
         agent: "plan",
-        provider: { id: "plan-only" },
-        model: { providerID: "plan-only", id: "glm-5.1" },
+        provider: { id: "automodel" },
+        model: { providerID: "automodel", id: "AutoModel" },
         message: {
           id: "msg_plan",
           role: "user",
@@ -188,10 +187,10 @@ describe("createChatHeadersHandler", () => {
       output,
     )
 
-    expect(output.headers["x-omoc-plan-route"]).toBe("1")
+    expect(output.headers["x-omoc-agent-route"]).toBe("plan")
   })
 
-  test("adds Plan route header for the Web UI Prometheus Plan Builder agent", async () => {
+  test("adds Plan agent route header for the Web UI Prometheus Plan Builder agent", async () => {
     const handler = createChatHeadersHandler({
       ctx: createSilentContext(),
       pluginConfig: createPlanOnlyRoutingConfig() as never,
@@ -202,8 +201,8 @@ describe("createChatHeadersHandler", () => {
       {
         sessionID: "ses_prometheus",
         agent: "Prometheus - Plan Builder",
-        provider: { id: "plan-only" },
-        model: { providerID: "plan-only", id: "glm-5.1" },
+        provider: { id: "automodel" },
+        model: { providerID: "automodel", id: "AutoModel" },
         message: {
           id: "msg_prometheus",
           role: "user",
@@ -212,10 +211,10 @@ describe("createChatHeadersHandler", () => {
       output,
     )
 
-    expect(output.headers["x-omoc-plan-route"]).toBe("1")
+    expect(output.headers["x-omoc-agent-route"]).toBe("plan")
   })
 
-  test("does not add Plan route header for non-Plan agents using the Plan-only model", async () => {
+  test("adds execute agent route header for non-Plan agents using AutoModel", async () => {
     const handler = createChatHeadersHandler({
       ctx: createSilentContext(),
       pluginConfig: createPlanOnlyRoutingConfig() as never,
@@ -226,8 +225,8 @@ describe("createChatHeadersHandler", () => {
       {
         sessionID: "ses_build",
         agent: "build",
-        provider: { id: "plan-only" },
-        model: { providerID: "plan-only", id: "glm-5.1" },
+        provider: { id: "automodel" },
+        model: { providerID: "automodel", id: "AutoModel" },
         message: {
           id: "msg_build",
           role: "user",
@@ -236,10 +235,10 @@ describe("createChatHeadersHandler", () => {
       output,
     )
 
-    expect(output.headers["x-omoc-plan-route"]).toBeUndefined()
+    expect(output.headers["x-omoc-agent-route"]).toBe("execute")
   })
 
-  test("does not add Plan route header for ordinary models", async () => {
+  test("does not add agent route header for ordinary models", async () => {
     const handler = createChatHeadersHandler({
       ctx: createSilentContext(),
       pluginConfig: createPlanOnlyRoutingConfig() as never,
@@ -260,6 +259,6 @@ describe("createChatHeadersHandler", () => {
       output,
     )
 
-    expect(output.headers["x-omoc-plan-route"]).toBeUndefined()
+    expect(output.headers["x-omoc-agent-route"]).toBeUndefined()
   })
 })

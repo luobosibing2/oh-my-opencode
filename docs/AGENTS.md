@@ -23,7 +23,7 @@
 | Release process | [docs/reference/release-process.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/release-process.md) |
 | Claiming the lazycodex npm name | [docs/reference/lazycodex-npm-reservation.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/lazycodex-npm-reservation.md) |
 | Rules-injector cross-module comparison | [docs/reference/rules-injection-cross-module-comparison.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/rules-injection-cross-module-comparison.md) |
-| Plan-only model routing isolation | [docs/reference/plan-only-model-routing.md](file:///Users/yeongyu/local-workspaces/omo/docs/reference/plan-only-model-routing.md) |
+| AutoModel agent routing | [docs/reference/automodel-agent-routing.md](reference/automodel-agent-routing.md) |
 | Sample configs | [docs/examples/](file:///Users/yeongyu/local-workspaces/omo/docs/examples/) (default, coding-focused, planning-focused) |
 | Privacy & ToS | [docs/legal/](file:///Users/yeongyu/local-workspaces/omo/docs/legal/) |
 | Manifesto | [docs/manifesto.md](file:///Users/yeongyu/local-workspaces/omo/docs/manifesto.md) |

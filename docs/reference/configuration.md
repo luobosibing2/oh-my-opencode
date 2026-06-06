@@ -29,7 +29,7 @@ Complete reference for Oh My OpenCode plugin configuration. During the rename tr
   - [MCPs](#mcps)
   - [LSP](#lsp)
 - [Advanced](#advanced)
-  - [Plan-only Model Routing](#plan-only-model-routing)
+  - [AutoModel Agent Routing](#automodel-agent-routing)
   - [Runtime Fallback](#runtime-fallback)
   - [Model Capabilities](#model-capabilities)
   - [Hashline Edit](#hashline-edit)
@@ -650,33 +650,31 @@ To disable the LSP MCP entirely:
 
 ## Advanced
 
-### Plan-only Model Routing
+### AutoModel Agent Routing
 
-`plan_only_model_routing` forces Plan requests through a dedicated provider/model while keeping ordinary agents on the user's normal model. The OpenCode-visible provider uses a fake API key; a separate gateway is responsible for swapping the real key only when the plugin adds the Plan route header.
+`automodel_agent_routing` registers a single OpenCode-visible `AutoModel` and marks each AutoModel request as either Plan or execute traffic. The OpenCode-visible provider uses a fake API key; a separate gateway maps the route marker to internal `SK-plan` / `SK-execute` values and real upstream models.
 
 ```jsonc
 {
-  "plan_only_model_routing": {
+  "automodel_agent_routing": {
     "enabled": true,
-    "provider_id": "plan-only",
-    "model_id": "glm-5.1",
+    "provider_id": "automodel",
+    "model_id": "AutoModel",
     "gateway_base_url": "https://www.micuapi.ai",
-    "fake_api_key": "sk-omoc-plan-only-fake",
-    "fallback_model": "micuapi/deepseek-v4-flash"
+    "fake_api_key": "sk-omoc-automodel-fake"
   }
 }
 ```
 
 | Option | Default | Description |
 | ------ | ------- | ----------- |
-| `enabled` | `false` | Enable Plan-only model routing |
-| `provider_id` | `plan-only` | OpenCode provider ID injected by the plugin |
-| `model_id` | `glm-5.1` | Model ID used for Plan requests |
+| `enabled` | `false` | Enable AutoModel agent routing |
+| `provider_id` | `automodel` | OpenCode provider ID injected by the plugin |
+| `model_id` | `AutoModel` | Single visible model routed by the gateway |
 | `gateway_base_url` | `https://www.micuapi.ai` | OpenAI-compatible gateway base URL |
-| `fake_api_key` | `sk-omoc-plan-only-fake` | API key stored in OpenCode config; never use a real secret here |
-| `fallback_model` | `micuapi/deepseek-v4-flash` | Normal model restored when a non-Plan agent tries to use the Plan-only model |
+| `fake_api_key` | `sk-omoc-automodel-fake` | API key stored in OpenCode config; never use a real secret or route token here |
 
-Full design and verification notes: [Plan-only Model Routing Isolation](./plan-only-model-routing.md).
+Full design and verification notes: [AutoModel Agent Routing](./automodel-agent-routing.md).
 
 ### Runtime Fallback
 

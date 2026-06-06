@@ -231,17 +231,16 @@ describe("MCP env allowlist initialization", () => {
   })
 })
 
-describe("Plan-only provider registration", () => {
-  test("registers the Plan-only gateway provider with a fake API key only", async () => {
+describe("AutoModel provider registration", () => {
+  test("registers the AutoModel gateway provider with a fake API key only", async () => {
     // given
     const pluginConfig = createPluginConfig({
-      plan_only_model_routing: {
+      automodel_agent_routing: {
         enabled: true,
-        provider_id: "plan-only",
-        model_id: "glm-5.1",
+        provider_id: "automodel",
+        model_id: "AutoModel",
         gateway_base_url: "https://www.micuapi.ai",
-        fake_api_key: "sk-omoc-plan-only-fake",
-        fallback_model: "micuapi/deepseek-v4-flash",
+        fake_api_key: "sk-omoc-automodel-fake",
       },
     } as never)
     const config: Record<string, unknown> = {
@@ -261,34 +260,35 @@ describe("Plan-only provider registration", () => {
 
     // then
     const providers = config.providers as Record<string, Record<string, unknown>>
-    const planProvider = providers["plan-only"]
-    expect(planProvider.endpoint).toEqual({
+    const automodelProvider = providers["automodel"]
+    expect(automodelProvider.endpoint).toEqual({
       type: "aisdk",
       package: "@ai-sdk/openai-compatible",
       url: "https://www.micuapi.ai",
     })
-    expect(planProvider.options).toEqual({
+    expect(automodelProvider.options).toEqual({
       aisdk: {
         provider: {
-          apiKey: "sk-omoc-plan-only-fake",
+          apiKey: "sk-omoc-automodel-fake",
         },
       },
     })
-    expect((planProvider.models as Record<string, unknown>)["glm-5.1"]).toBeDefined()
+    expect((automodelProvider.models as Record<string, unknown>)["AutoModel"]).toBeDefined()
 
     const legacyProviders = config.provider as Record<string, Record<string, unknown>>
-    expect(legacyProviders["plan-only"].npm).toBe("@ai-sdk/openai-compatible")
-    expect(JSON.stringify(config)).toContain("sk-omoc-plan-only-fake")
-    expect(JSON.stringify(config)).not.toContain("OMOC_PLAN_ONLY_REAL_API_KEY")
+    expect(legacyProviders["automodel"].npm).toBe("@ai-sdk/openai-compatible")
+    expect(JSON.stringify(config)).toContain("sk-omoc-automodel-fake")
+    expect(JSON.stringify(config)).not.toContain("SK-plan")
+    expect(JSON.stringify(config)).not.toContain("SK-execute")
   })
 
-  test("does not register Plan-only provider when routing is disabled", async () => {
+  test("does not register AutoModel provider when routing is disabled", async () => {
     // given
     const pluginConfig = createPluginConfig({
-      plan_only_model_routing: {
+      automodel_agent_routing: {
         enabled: false,
         gateway_base_url: "https://www.micuapi.ai",
-        fake_api_key: "sk-omoc-plan-only-fake",
+        fake_api_key: "sk-omoc-automodel-fake",
       },
     } as never)
     const config: Record<string, unknown> = {
@@ -309,8 +309,8 @@ describe("Plan-only provider registration", () => {
     await handler(config)
 
     // then
-    expect((config.providers as Record<string, unknown>)["plan-only"]).toBeUndefined()
-    expect((config.provider as Record<string, unknown>)["plan-only"]).toBeUndefined()
+    expect((config.providers as Record<string, unknown>)["automodel"]).toBeUndefined()
+    expect((config.provider as Record<string, unknown>)["automodel"]).toBeUndefined()
   })
 })
 

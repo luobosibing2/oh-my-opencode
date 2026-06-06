@@ -9,12 +9,6 @@ import {
   log,
 } from "../shared"
 import { getAgentConfigKey } from "../shared/agent-display-names"
-import {
-  getPlanOnlyModelReference,
-  getPlanOnlyModelRoutingSettings,
-  isPlanAgent,
-  isPlanOnlyModel,
-} from "../shared/plan-only-model-routing"
 import { getSessionModel, setSessionModel } from "../shared/session-model-state"
 import { getMainSessionID, setSessionAgent, updateSessionAgent, subagentSessions } from "../features/claude-code-session-state"
 import { NATIVE_LOOP_TRIGGERED_FLAG } from "./command-execute-before"
@@ -119,41 +113,12 @@ function readMessageModel(output: ChatMessageHandlerOutput): SessionModelOverrid
   return undefined
 }
 
-function applyPlanOnlyModelRouting(
-  input: ChatMessageInput,
-  output: ChatMessageHandlerOutput,
-  pluginConfig: OhMyOpenCodeConfig,
-): void {
-  const settings = getPlanOnlyModelRoutingSettings(pluginConfig)
-  if (!settings) return
-
-  if (isPlanAgent(input.agent)) {
-    output.message.model = getPlanOnlyModelReference(settings)
-    return
-  }
-
-  const selectedModel = readMessageModel(output) ?? input.model
-  if (!isPlanOnlyModel(settings, selectedModel)) return
-
-  const recentNormalModel = getSessionModel(input.sessionID)
-  if (recentNormalModel && !isPlanOnlyModel(settings, recentNormalModel)) {
-    output.message.model = recentNormalModel
-    return
-  }
-
-  output.message.model = settings.fallbackModel
-}
-
 function rememberNormalSessionModel(
   input: ChatMessageInput,
   output: ChatMessageHandlerOutput,
-  pluginConfig: OhMyOpenCodeConfig,
 ): void {
-  if (isPlanAgent(input.agent)) return
-
-  const settings = getPlanOnlyModelRoutingSettings(pluginConfig)
   const model = readMessageModel(output) ?? input.model
-  if (!model || isPlanOnlyModel(settings, model)) return
+  if (!model) return
 
   setSessionModel(input.sessionID, model)
 }
@@ -381,7 +346,6 @@ export function createChatMessageHandler(args: {
       input.sessionID,
       pluginContext.client,
     )
-    applyPlanOnlyModelRouting(input, output, pluginConfig)
-    rememberNormalSessionModel(input, output, pluginConfig)
+    rememberNormalSessionModel(input, output)
   }
 }

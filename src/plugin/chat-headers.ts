@@ -1,12 +1,13 @@
 import type { OhMyOpenCodeConfig } from "../config"
 import { OMO_INTERNAL_INITIATOR_MARKER } from "../shared"
 import {
-  getPlanOnlyModelRoutingSettings,
+  AUTOMODEL_AGENT_ROUTE_HEADER,
+  AUTOMODEL_EXECUTE_ROUTE_VALUE,
+  AUTOMODEL_PLAN_ROUTE_VALUE,
+  getAutoModelAgentRoutingSettings,
+  isAutoModel,
   isPlanAgent,
-  isPlanOnlyModel,
-  PLAN_ONLY_ROUTE_HEADER,
-  PLAN_ONLY_ROUTE_HEADER_VALUE,
-} from "../shared/plan-only-model-routing"
+} from "../shared/automodel-agent-routing"
 import type { PluginContext } from "./types"
 
 type ChatHeadersInput = {
@@ -156,12 +157,11 @@ export function createChatHeadersHandler(args: {
     if (!normalizedInput) return
     if (!isChatHeadersOutput(output)) return
 
-    const planOnlySettings = getPlanOnlyModelRoutingSettings(pluginConfig)
-    if (
-      isPlanAgent(normalizedInput.agent) &&
-      isPlanOnlyModel(planOnlySettings, normalizedInput.model)
-    ) {
-      output.headers[PLAN_ONLY_ROUTE_HEADER] = PLAN_ONLY_ROUTE_HEADER_VALUE
+    const autoModelSettings = getAutoModelAgentRoutingSettings(pluginConfig)
+    if (isAutoModel(autoModelSettings, normalizedInput.model)) {
+      output.headers[AUTOMODEL_AGENT_ROUTE_HEADER] = isPlanAgent(normalizedInput.agent)
+        ? AUTOMODEL_PLAN_ROUTE_VALUE
+        : AUTOMODEL_EXECUTE_ROUTE_VALUE
     }
 
     if (!isCopilotProvider(normalizedInput.provider.id)) return
