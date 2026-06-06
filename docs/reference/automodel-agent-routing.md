@@ -11,6 +11,53 @@
 5. 插件不写入 `Authorization: Bearer SK-plan` 或 `Authorization: Bearer SK-execute`；这两个路由 token 由 gateway 服务端内部持有。
 6. gateway 转发上游前剥离 `x-omoc-agent-route`，并按 route marker 映射到内部 SK 和真实模型。
 
+## Solution Thinking
+
+核心思路是把“模型选择”和“真实模型路由”拆开：OpenCode 只负责选择一个稳定可见的 `AutoModel`，插件只负责把当前请求标记成 Plan 或 execute，gateway 才负责把这个标记映射到真实 SK 和真实上游模型。
+
+旧方案依赖模型名劫持：Plan 时把当前消息改成 `plan-only/glm-5.1`，非 Plan 时再恢复普通模型。这能工作，但 UI 会看到额外模型，也需要处理 Plan 结束后的模型污染问题。新方案改成单模型后，UI 不再切换模型名，也不需要恢复逻辑；用户只需要始终选择 `AutoModel`，切换 agent 就能改变 gateway 的实际路由。
+
+运行链路是：
+
+```text
+OpenCode UI selects automodel/AutoModel
+  -> plugin marks the request as plan or execute
+  -> gateway validates fake key + route marker + AutoModel body
+  -> gateway maps the marker to an internal SK and upstream model
+  -> gateway strips internal headers and forwards the rewritten request
+```
+
+Plan 请求和普通执行请求的差异只体现在内部 route marker 上：
+
+| Request kind | Route marker | Gateway route |
+| ------------ | ------------ | ------------- |
+| Plan agent | `x-omoc-agent-route: plan` | internal Plan SK and Plan model |
+| Non-Plan agent | `x-omoc-agent-route: execute` | internal execute SK and execute model |
+
+这个 header 只是路由标记，不是安全凭证。强隔离依赖 gateway 服务端策略：只有 fake/default SK、`AutoModel` 请求体和合法 route marker 同时满足时，gateway 才会选择内部真实 SK；否则请求应被拒绝。
+
+## Security Boundary
+
+OpenCode、插件配置和仓库文件里不保存 `SK-plan`、`SK-execute` 或真实上游 SK。它们只存在于 gateway 服务端环境中。插件也不直接改写 `Authorization` 为这些内部 token，因为 OpenCode 的底层 provider/auth 可能覆盖普通 header，而且把路由 token 放到用户机器侧也不符合密钥隔离目标。
+
+gateway 转发上游前需要做三件事：
+
+1. 删除 `x-omoc-agent-route`，避免把内部路由标记传给上游。
+2. 把 fake/default SK 替换成 gateway 内部选择的真实 SK。
+3. 把请求体里的 `AutoModel` 改成真实上游模型名。
+
+因此，上游只看到正常的 OpenAI-compatible 请求；用户机器侧只看到 `AutoModel` 和 fake/default SK。
+
+## Verification Method
+
+验证分成三层：
+
+1. 配置验证：OpenCode 配置和 `/models` 只暴露 `automodel/AutoModel`，只出现 fake/default SK，不出现 `SK-plan`、`SK-execute` 或真实上游 SK。
+2. hook 验证：Plan agent 的 `AutoModel` 请求会带 `x-omoc-agent-route: plan`；非 Plan agent 的 `AutoModel` 请求会带 `x-omoc-agent-route: execute`；普通非 AutoModel 请求不打这个 header。
+3. gateway 验证：Plan marker 路由到 Plan 模型，execute marker 路由到 execute 模型；无 marker、非法 marker、fake/default SK 不匹配或 body model 不是 `AutoModel` 时返回 403。
+
+本地 demo 验收可以直接看 gateway 日志。一次非 Plan 请求后应看到 `route=execute model=AutoModel upstreamModel=<execute model>`；一次 Plan 请求后应看到 `route=plan model=AutoModel upstreamModel=<plan model>`。如果没有 route marker，应看到 403 拒绝日志，而不是成功转发。
+
 ## Implemented Routing
 
 AutoModel 路由由三段逻辑组成：
